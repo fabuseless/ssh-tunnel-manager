@@ -27,7 +27,7 @@ Item {
   property string nameDraft: ""
   property string sshHostDraft: ""
   property string localPortDraft: ""
-  property string remoteHostDraft: "127.0.0.1"
+  property string remoteHostDraft: ""
   property string remotePortDraft: ""
 
   property var fieldErrors: ({})
@@ -84,7 +84,7 @@ Item {
     root.nameDraft = ""
     root.sshHostDraft = ""
     root.localPortDraft = ""
-    root.remoteHostDraft = "127.0.0.1"
+    root.remoteHostDraft = ""
     root.remotePortDraft = ""
   }
 
