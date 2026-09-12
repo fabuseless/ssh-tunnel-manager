@@ -70,7 +70,6 @@ function toPayload(draft) {
     sshHost: String(draft.sshHost || "").trim(),
     localPort: Math.floor(Number(draft.localPort)),
     remoteHost: String(draft.remoteHost || "127.0.0.1").trim() || "127.0.0.1",
-    remotePort: Math.floor(Number(draft.remotePort)),
-    favorite: !!draft.favorite
+    remotePort: Math.floor(Number(draft.remotePort))
   }
 }

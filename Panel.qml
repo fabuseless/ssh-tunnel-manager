@@ -26,7 +26,7 @@ Panel {
 
   readonly property color barIconColor: {
     var base = bar ? bar.barForeground : Color.foreground
-    return serviceReady && svc.favoriteActive ? base : Qt.darker(base, 1.55)
+    return serviceReady && svc.activeCount > 0 ? base : Qt.darker(base, 1.55)
   }
 
   function openSettings(tunnelId) {
@@ -47,12 +47,6 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-
-    function toggleFavorite(): string {
-      if (!root.serviceReady) return "service unavailable"
-      root.svc.toggleFavorite()
-      return "ok"
-    }
 
     function start(id: string): string {
       if (!root.serviceReady) return "service unavailable"
@@ -81,14 +75,14 @@ Panel {
     text: root.icon
     foreground: root.barIconColor
     active: root.serviceReady && root.svc.lastError !== ""
-    tooltipText: root.serviceReady && root.svc.favoriteTunnel
-      ? (root.svc.favoriteActive ? "Favorite tunnel: on (right-click to turn off)"
-                                  : "Favorite tunnel: off (right-click to turn on)")
-      : "SSH Local Tunnels — click to manage"
+    tooltipText: {
+      if (!root.serviceReady) return "SSH Local Tunnels — click to manage"
+      var count = root.svc.activeCount
+      if (count === 0) return "No tunnels connected"
+      return count + (count === 1 ? " tunnel connected" : " tunnels connected")
+    }
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton) {
-        if (root.serviceReady) root.svc.toggleFavorite()
-      } else if (buttonCode === Qt.MiddleButton) {
+      if (buttonCode === Qt.MiddleButton) {
         if (root.serviceReady) root.svc.refreshStatus()
       } else {
         root.toggle()
@@ -214,18 +208,9 @@ Panel {
                 readonly property bool tunnelBusy: root.serviceReady
                   && root.svc.isPending(modelData.id)
 
-                PanelActionButton {
-                  id: favoriteBtn
-                  iconText: modelData.favorite ? "★" : "☆"   // ★ / ☆
-                  tooltipText: modelData.favorite ? "Favorite tunnel" : "Set as favorite"
-                  foreground: modelData.favorite ? Color.accent : Qt.darker(root.foreground, 1.4)
-                  fontFamily: root.fontFamily
-                  onClicked: if (root.serviceReady) root.svc.setFavorite(modelData.id)
-                }
-
                 Column {
-                  width: parent.width - favoriteBtn.width - toggleSwitch.width
-                    - editBtn.width - (Style.spacing.md * 3)
+                  width: parent.width - toggleSwitch.width
+                    - editBtn.width - (Style.spacing.md * 2)
 
                   Text {
                     textFormat: Text.PlainText

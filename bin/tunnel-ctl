@@ -11,8 +11,6 @@
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition
 #   remove <id>                stop if running, then delete the definition
-#   set-favorite <id>          clear favorite on all others, set on <id>
-#   toggle-favorite            start/stop whichever tunnel is favorite
 #
 # Security invariants (see plugin README for the full rationale):
 #   - every ssh invocation is an argv array, never a shell string
@@ -69,14 +67,12 @@ validate_whole() {
       and (.sshHost | valid_str_field)
       and (.localPort | valid_port)
       and (.remoteHost | valid_str_field)
-      and (.remotePort | valid_port)
-      and (.favorite | type == "boolean");
+      and (.remotePort | valid_port);
     (.schemaVersion == 1)
     and (.tunnels | type == "array")
     and (.tunnels | all(.[]; valid_tunnel))
     and ((.tunnels | map(.id) | unique | length) == (.tunnels | length))
     and ((.tunnels | map(.localPort) | unique | length) == (.tunnels | length))
-    and ((.tunnels | map(select(.favorite == true)) | length) <= 1)
   ' "$file" >/dev/null 2>&1
 }
 
@@ -266,14 +262,13 @@ do_add() {
   local json="$1"
   validate_input_fields "$json" || fail "invalid tunnel definition"
 
-  local existing name ssh_host local_port remote_host remote_port favorite id
+  local existing name ssh_host local_port remote_host remote_port id
   existing=$(cat "$config_file")
   name=$(jq -r '.name' <<<"$json")
   ssh_host=$(jq -r '.sshHost' <<<"$json")
   local_port=$(jq -r '.localPort' <<<"$json")
   remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")
   remote_port=$(jq -r '.remotePort' <<<"$json")
-  favorite=$(jq -r '(.favorite // false)' <<<"$json")
 
   if jq -e --argjson p "$local_port" '.tunnels[] | select(.localPort == $p)' <<<"$existing" >/dev/null 2>&1; then
     fail "local port $local_port is already used by another tunnel"
@@ -285,16 +280,11 @@ do_add() {
   new_tunnel=$(jq -n \
     --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
     --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
-    --argjson remotePort "$remote_port" --argjson favorite "$favorite" \
+    --argjson remotePort "$remote_port" \
     '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort, favorite: $favorite}')
+      remoteHost: $remoteHost, remotePort: $remotePort}')
 
-  write_config '
-    .tunnels += [$newtunnel]
-    | if ($newtunnel.favorite == true)
-      then .tunnels |= map(if .id == $newtunnel.id then . else (.favorite = false) end)
-      else . end
-  ' --argjson newtunnel "$new_tunnel"
+  write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
 
   echo "$new_tunnel"
 }
@@ -304,10 +294,9 @@ do_update() {
   tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
   validate_input_fields "$json" || fail "invalid tunnel definition"
 
-  local existing local_port favorite
+  local existing local_port
   existing=$(cat "$config_file")
   local_port=$(jq -r '.localPort' <<<"$json")
-  favorite=$(jq -r '(.favorite // false)' <<<"$json")
 
   if jq -e --arg id "$id" --argjson p "$local_port" \
       '.tunnels[] | select(.localPort == $p and .id != $id)' <<<"$existing" >/dev/null 2>&1; then
@@ -321,16 +310,11 @@ do_update() {
     --argjson localPort "$local_port" \
     --arg remoteHost "$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")" \
     --argjson remotePort "$(jq -r '.remotePort' <<<"$json")" \
-    --argjson favorite "$favorite" \
     '{name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort, favorite: $favorite}')
+      remoteHost: $remoteHost, remotePort: $remotePort}')
 
-  write_config '
-    .tunnels |= map(if .id == $id then (. + $patch) else . end)
-    | if ($patch.favorite == true)
-      then .tunnels |= map(if .id == $id then . else (.favorite = false) end)
-      else . end
-  ' --arg id "$id" --argjson patch "$patch"
+  write_config '.tunnels |= map(if .id == $id then (. + $patch) else . end)' \
+    --arg id "$id" --argjson patch "$patch"
 
   tunnel_by_id "$id"
 }
@@ -340,27 +324,6 @@ do_remove() {
   tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
   do_stop "$id" >/dev/null || true
   write_config '.tunnels |= map(select(.id != $id))' --arg id "$id"
-}
-
-do_set_favorite() {
-  local id="$1"
-  tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
-  write_config '.tunnels |= map(.favorite = (.id == $id))' --arg id "$id"
-}
-
-do_toggle_favorite() {
-  local favorite
-  favorite=$(jq -e '.tunnels[] | select(.favorite == true)' "$config_file") \
-    || fail "no favorite tunnel is set"
-  local id ssh_host socket
-  id=$(jq -r '.id' <<<"$favorite")
-  ssh_host=$(jq -r '.sshHost' <<<"$favorite")
-  socket=$(control_socket_for "$id")
-  if is_tunnel_active "$ssh_host" "$socket"; then
-    do_stop "$id"
-  else
-    do_start "$id"
-  fi
 }
 
 # ---------------------------------------------------------------- ssh config
@@ -398,7 +361,5 @@ case "$action" in
   add)            with_lock do_add "${1:?tunnel json required}" ;;
   update)         with_lock do_update "${1:?tunnel id required}" "${2:?tunnel json required}" ;;
   remove)         with_lock do_remove "${1:?tunnel id required}" ;;
-  set-favorite)   with_lock do_set_favorite "${1:?tunnel id required}" ;;
-  toggle-favorite) with_lock do_toggle_favorite ;;
   *) fail "unknown action: $action" ;;
 esac

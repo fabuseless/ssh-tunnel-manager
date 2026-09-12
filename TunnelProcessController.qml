@@ -36,7 +36,7 @@ QtObject {
   }
 
   // ---------------------------------------------------------- action lane
-  // start / stop / toggle-favorite / set-favorite
+  // start / stop
 
   property var _actionCallback: null
   readonly property bool actionBusy: actionProcess.running

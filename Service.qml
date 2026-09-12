@@ -34,19 +34,11 @@ QtObject {
 
   readonly property int pollIntervalSec: root.intSetting("pollIntervalSec", 7, 3, 120)
 
-  // [{id, name, sshHost, localPort, remoteHost, remotePort, favorite, active}]
+  // [{id, name, sshHost, localPort, remoteHost, remotePort, active}]
   property var tunnels: []
   property var sshHosts: []
   property string lastError: ""
 
-  readonly property var favoriteTunnel: {
-    for (var i = 0; i < root.tunnels.length; i++) {
-      if (root.tunnels[i].favorite) return root.tunnels[i]
-    }
-    return null
-  }
-  readonly property bool favoriteActive: root.favoriteTunnel
-    ? root.displayActive(root.favoriteTunnel) : false
   readonly property int activeCount: {
     root.pendingToggleRevision
     var n = 0
@@ -217,19 +209,6 @@ QtObject {
     if (!tunnel) return
     if (root.displayActive(tunnel)) root.stopTunnel(id)
     else root.startTunnel(id)
-  }
-
-  function toggleFavorite() {
-    var tunnel = root.favoriteTunnel
-    if (!tunnel) return
-    root.toggleTunnel(tunnel.id)
-  }
-
-  function setFavorite(id) {
-    root.controller.runAction(["set-favorite", id], function(exitCode, stdout, stderr) {
-      if (exitCode !== 0) root.lastError = root.extractError(stdout, stderr, "Could not set favorite.")
-      root.refreshStatus()
-    })
   }
 
   function createTunnel(draft, onDone) {

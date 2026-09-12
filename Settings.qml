@@ -29,7 +29,6 @@ Item {
   property string localPortDraft: ""
   property string remoteHostDraft: "127.0.0.1"
   property string remotePortDraft: ""
-  property bool favoriteDraft: false
 
   property var fieldErrors: ({})
   property string formError: ""
@@ -79,7 +78,6 @@ Item {
         root.localPortDraft = String(tunnel.localPort)
         root.remoteHostDraft = tunnel.remoteHost
         root.remotePortDraft = String(tunnel.remotePort)
-        root.favoriteDraft = !!tunnel.favorite
         return
       }
     }
@@ -88,7 +86,6 @@ Item {
     root.localPortDraft = ""
     root.remoteHostDraft = "127.0.0.1"
     root.remotePortDraft = ""
-    root.favoriteDraft = false
   }
 
   function currentDraft() {
@@ -97,9 +94,22 @@ Item {
       sshHost: root.sshHostDraft,
       localPort: Number(root.localPortDraft),
       remoteHost: root.remoteHostDraft,
-      remotePort: Number(root.remotePortDraft),
-      favorite: root.favoriteDraft
+      remotePort: Number(root.remotePortDraft)
     }
+  }
+
+  // Case-insensitive substring match against the known SSH config hosts,
+  // for the host field's suggestion list. Empty query shows all of them.
+  function filteredHosts() {
+    if (!root.service) return []
+    var query = root.sshHostDraft.trim().toLowerCase()
+    var all = root.service.sshHosts
+    if (!query) return all
+    var out = []
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].toLowerCase().indexOf(query) !== -1) out.push(all[i])
+    }
+    return out
   }
 
   // Excludes the tunnel being edited, so its own port isn't flagged as a
@@ -171,7 +181,7 @@ Item {
       radius: Style.cornerRadius
       color: root.background
       borderSpec: root.borderSpec
-      padding: Style.spacing.panelPadding
+      padding: Style.spacing.panelPadding + Style.spacing.xl
 
       MouseArea { anchors.fill: parent }
 
@@ -216,7 +226,7 @@ Item {
               TextField {
                 width: fieldsColumn.width
                 text: root.nameDraft
-                placeholderText: "Framework VNC"
+                placeholderText: "My Tunnel"
                 onTextChanged: root.nameDraft = text
               }
               Text {
@@ -235,14 +245,64 @@ Item {
                 font.family: root.family
                 font.pixelSize: Style.font.bodySmall
               }
-              ComboBox {
-                id: hostCombo
+              TextField {
+                id: hostField
                 width: fieldsColumn.width
-                editable: true
-                model: root.service ? root.service.sshHosts : []
-                editText: root.sshHostDraft
-                onEditTextChanged: root.sshHostDraft = editText
-                Component.onCompleted: editText = root.sshHostDraft
+                text: root.sshHostDraft
+                placeholderText: "user@host"
+                onTextChanged: root.sshHostDraft = text
+              }
+              // A themed autocomplete list rather than a ComboBox: an
+              // editable ComboBox's `editText` and `currentIndex` are
+              // separate state, so setting editText programmatically (as a
+              // draft-bound field needs to) never marks anything as
+              // "selected" in the dropdown — it only looks picked until the
+              // user reopens the list and clicks the same entry again. Here
+              // the text field IS the value, always; the list below is just
+              // a convenience that writes into the same property.
+              Column {
+                id: hostSuggestions
+                width: fieldsColumn.width
+                spacing: Style.spacing.xxs
+                visible: hostField.activeFocus && root.filteredHosts().length > 0
+
+                Repeater {
+                  model: hostSuggestions.visible ? root.filteredHosts() : []
+                  delegate: Rectangle {
+                    id: suggestionRow
+                    required property string modelData
+                    width: hostSuggestions.width
+                    height: suggestionText.implicitHeight + Style.spacing.sm * 2
+                    radius: Style.cornerRadius
+                    color: suggestionMouse.containsMouse
+                      ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+
+                    Text {
+                      id: suggestionText
+                      anchors {
+                        left: parent.left; right: parent.right
+                        verticalCenter: parent.verticalCenter
+                        leftMargin: Style.spacing.sm
+                      }
+                      textFormat: Text.PlainText
+                      text: suggestionRow.modelData
+                      color: root.foreground
+                      font.family: root.family
+                      font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideRight
+                    }
+
+                    MouseArea {
+                      id: suggestionMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      onClicked: {
+                        root.sshHostDraft = suggestionRow.modelData
+                        hostField.forceActiveFocus()
+                      }
+                    }
+                  }
+                }
               }
               Text {
                 textFormat: Text.PlainText
@@ -272,7 +332,7 @@ Item {
               TextField {
                 width: fieldsColumn.width
                 text: root.localPortDraft
-                placeholderText: "5900"
+                placeholderText: "8080"
                 validator: IntValidator { bottom: 1; top: 65535 }
                 onTextChanged: root.localPortDraft = text
               }
@@ -317,7 +377,7 @@ Item {
               TextField {
                 width: fieldsColumn.width
                 text: root.remotePortDraft
-                placeholderText: "5900"
+                placeholderText: "80"
                 validator: IntValidator { bottom: 1; top: 65535 }
                 onTextChanged: root.remotePortDraft = text
               }
@@ -328,16 +388,6 @@ Item {
                 color: Color.urgent
                 font.family: root.family
                 font.pixelSize: Style.font.caption
-              }
-
-              Toggle {
-                width: fieldsColumn.width
-                label: "Favorite"
-                description: "Toggle this tunnel directly from the bar icon."
-                checked: root.favoriteDraft
-                foreground: root.foreground
-                fontFamily: root.family
-                onClicked: root.favoriteDraft = !root.favoriteDraft
               }
 
               Text {
