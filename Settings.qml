@@ -291,45 +291,62 @@ Item {
               // user reopens the list and clicks the same entry again. Here
               // the text field IS the value, always; the list below is just
               // a convenience that writes into the same property.
-              Column {
-                id: hostSuggestions
+              //
+              // Bounded and independently scrollable: a long ~/.ssh/config
+              // must produce a short dropdown, not one that expands the
+              // whole form and buries Local Port/Remote Host/Remote Port/
+              // Create below every alias. The scrollbar is only forced
+              // visible when the list actually overflows the cap, so a
+              // short match list shows no persistent scrollbar clutter.
+              ScrollView {
+                id: hostSuggestionsScroller
+                readonly property int maxHeight: Style.space(160)
                 width: fieldsColumn.width
-                spacing: Style.spacing.xxs
                 visible: hostField.activeFocus && root.filteredHosts().length > 0
+                implicitHeight: Math.min(hostSuggestionsColumn.implicitHeight, maxHeight)
+                clip: true
+                ScrollBar.vertical.policy: hostSuggestionsColumn.implicitHeight > maxHeight
+                  ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
 
-                Repeater {
-                  model: hostSuggestions.visible ? root.filteredHosts() : []
-                  delegate: Rectangle {
-                    id: suggestionRow
-                    required property string modelData
-                    width: hostSuggestions.width
-                    height: suggestionText.implicitHeight + Style.spacing.sm * 2
-                    radius: Style.cornerRadius
-                    color: suggestionMouse.containsMouse
-                      ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+                Column {
+                  id: hostSuggestionsColumn
+                  width: hostSuggestionsScroller.availableWidth
+                  spacing: Style.spacing.xxs
 
-                    Text {
-                      id: suggestionText
-                      anchors {
-                        left: parent.left; right: parent.right
-                        verticalCenter: parent.verticalCenter
-                        leftMargin: Style.spacing.sm
+                  Repeater {
+                    model: hostSuggestionsScroller.visible ? root.filteredHosts() : []
+                    delegate: Rectangle {
+                      id: suggestionRow
+                      required property string modelData
+                      width: hostSuggestionsColumn.width
+                      height: suggestionText.implicitHeight + Style.spacing.sm * 2
+                      radius: Style.cornerRadius
+                      color: suggestionMouse.containsMouse
+                        ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+
+                      Text {
+                        id: suggestionText
+                        anchors {
+                          left: parent.left; right: parent.right
+                          verticalCenter: parent.verticalCenter
+                          leftMargin: Style.spacing.sm
+                        }
+                        textFormat: Text.PlainText
+                        text: suggestionRow.modelData
+                        color: root.foreground
+                        font.family: root.family
+                        font.pixelSize: Style.font.bodySmall
+                        elide: Text.ElideRight
                       }
-                      textFormat: Text.PlainText
-                      text: suggestionRow.modelData
-                      color: root.foreground
-                      font.family: root.family
-                      font.pixelSize: Style.font.bodySmall
-                      elide: Text.ElideRight
-                    }
 
-                    MouseArea {
-                      id: suggestionMouse
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      onClicked: {
-                        root.sshHostDraft = suggestionRow.modelData
-                        hostField.forceActiveFocus()
+                      MouseArea {
+                        id: suggestionMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: {
+                          root.sshHostDraft = suggestionRow.modelData
+                          hostField.forceActiveFocus()
+                        }
                       }
                     }
                   }

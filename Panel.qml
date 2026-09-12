@@ -152,6 +152,7 @@ Panel {
               tooltipText: "New tunnel"
               foreground: Qt.darker(root.foreground, 1.4)
               fontFamily: root.fontFamily
+              fontSize: Style.font.icon + 4
               onClicked: root.openSettings("")
             }
           }
@@ -228,6 +229,7 @@ Panel {
                   && root.svc.isPending(modelData.id)
 
                 Column {
+                  anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - toggleSwitch.width
                     - editBtn.width - (Style.spacing.md * 2)
 
@@ -254,15 +256,18 @@ Panel {
 
                 PanelActionButton {
                   id: editBtn
+                  anchors.verticalCenter: parent.verticalCenter
                   iconText: "✎"   // pencil
                   tooltipText: "Edit"
                   foreground: Qt.darker(root.foreground, 1.4)
                   fontFamily: root.fontFamily
+                  fontSize: Style.font.icon + 4
                   onClicked: root.openSettings(modelData.id)
                 }
 
                 ToggleSwitch {
                   id: toggleSwitch
+                  anchors.verticalCenter: parent.verticalCenter
                   checked: parent.tunnelActive
                   busy: parent.tunnelBusy
                   foreground: root.foreground
@@ -320,6 +325,7 @@ Panel {
                   && root.svc.isForeignStopPending(modelData.pid)
 
                 Column {
+                  anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - stopBtn.width - adoptBtn.width - (Style.spacing.md * 2)
 
                   Text {
@@ -345,19 +351,23 @@ Panel {
 
                 PanelActionButton {
                   id: adoptBtn
+                  anchors.verticalCenter: parent.verticalCenter
                   iconText: "✎"   // pencil, matching the managed-list edit affordance
                   tooltipText: "Adopt into managed list"
                   foreground: Qt.darker(root.foreground, 1.4)
                   fontFamily: root.fontFamily
+                  fontSize: Style.font.icon + 4
                   onClicked: root.openAdopt(modelData)
                 }
 
                 PanelActionButton {
                   id: stopBtn
+                  anchors.verticalCenter: parent.verticalCenter
                   iconText: "⏻"
                   tooltipText: "Stop"
                   foreground: Color.urgent
                   fontFamily: root.fontFamily
+                  fontSize: Style.font.icon + 4
                   enabled: !stopBusy
                   onClicked: if (root.serviceReady) {
                     root.svc.stopForeignTunnel(modelData.pid, modelData.startTicks)
