@@ -181,7 +181,7 @@ Item {
       radius: Style.cornerRadius
       color: root.background
       borderSpec: root.borderSpec
-      padding: Style.spacing.panelPadding + Style.spacing.xl
+      padding: Style.spacing.panelPadding + Style.space(24)
 
       MouseArea { anchors.fill: parent }
 
