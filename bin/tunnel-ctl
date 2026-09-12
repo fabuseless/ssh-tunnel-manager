@@ -6,12 +6,13 @@
 # Actions:
 #   start <id>                 start a tunnel (ControlMaster spawn, idempotent)
 #   stop <id>                  tear a tunnel down (idempotent)
-#   status                     JSON {tunnels, discovered}: managed tunnel
-#                               defs + live "active" state, plus foreign
-#                               ssh -L processes found running on the system
-#   stop-foreign <pid> <startTicks>
-#                               verified-kill a foreign (non-plugin) ssh -L
-#                               process discovered via `status`
+#   status                     JSON {tunnels}: tunnel defs + live "active"
+#                               state. Before computing status, silently
+#                               auto-adopts any foreign ssh -L process found
+#                               running on the system (one not spawned by
+#                               this plugin) as a normal tunnel definition —
+#                               from that point on it is indistinguishable
+#                               from one created through the form.
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition
@@ -22,20 +23,20 @@
 #   - host/port fields are re-validated here even if a caller already did
 #   - liveness/teardown use ssh's own ControlMaster socket, never raw PIDs,
 #     with ONE narrow, explicitly scoped exception:
-#   - killing a *foreign* (non-plugin) ssh -L process — via `stop-foreign`
-#     directly, or via `do_stop`'s same-logic fallback for a just-adopted,
-#     not-yet-restarted definition — is only ever a candidate if its argv
-#     does NOT contain our own `-S $runtime_dir/*.sock` (fixed at spawn
-#     time, independent of `-O check` health, so a plugin-owned tunnel can
-#     never reach this path). Immediately before SIGTERM, and again before
-#     any escalation to SIGKILL, the target's live /proc/<pid>/stat `comm`
-#     and start-time are re-read and must still exactly match what was
-#     recorded at discovery time; a recycled pid is treated as "already
-#     gone" and never signaled. SIGTERM first, SIGKILL only after a bounded
-#     (~2s) grace period if still verified as the same process. Only the
-#     single pid is signaled, never a process group. The kernel's own
-#     UID-ownership check on kill(2) is an independent backstop underneath
-#     all of this.
+#   - killing a *foreign* (non-plugin) ssh -L process — only ever reached
+#     via `do_stop`'s fallback for a definition with no control socket yet
+#     (e.g. one auto-adopted moments ago, never yet restarted through us) —
+#     is only ever a candidate if its argv does NOT contain our own
+#     `-S $runtime_dir/*.sock` (fixed at spawn time, independent of
+#     `-O check` health, so a plugin-owned tunnel can never reach this
+#     path). Immediately before SIGTERM, and again before any escalation to
+#     SIGKILL, the target's live /proc/<pid>/stat `comm` and start-time are
+#     re-read and must still exactly match what was recorded at discovery
+#     time; a recycled pid is treated as "already gone" and never signaled.
+#     SIGTERM first, SIGKILL only after a bounded (~2s) grace period if
+#     still verified as the same process. Only the single pid is signaled,
+#     never a process group. The kernel's own UID-ownership check on
+#     kill(2) is an independent backstop underneath all of this.
 #   - the /proc scan and the port-listener probe used for discovery/display
 #     are read-only, same-uid, time-bounded, and cannot hang the status poll
 #   - tunnels.json writes are locked, atomically written, and re-validated
@@ -270,9 +271,48 @@ is_tunnel_active() {
   [[ -n "$local_port" ]] && port_has_listener "$local_port"
 }
 
+# For every foreign ssh -L process not already tracked by an existing
+# definition (by local port), silently persists it as a normal tunnel via
+# the same write_config/validate_whole path do_add uses — no special-cased
+# storage, no new validation logic. From the next read of tunnels.json
+# onward it is a completely ordinary entry.
+auto_adopt_new_ports() {
+  local discovered="$1" count i
+  count=$(jq 'length' <<<"$discovered")
+  for ((i = 0; i < count; i++)); do
+    local entry lp
+    entry=$(jq -c ".[$i]" <<<"$discovered")
+    lp=$(jq -r '.localPort' <<<"$entry")
+
+    if jq -e --argjson p "$lp" '.tunnels[]? | select(.localPort == $p)' \
+        "$config_file" >/dev/null 2>&1; then
+      continue   # already tracked (socket-active or port-fallback-active)
+    fi
+
+    local ssh_host remote_host remote_port name id existing new_tunnel
+    ssh_host=$(jq -r '.sshHost' <<<"$entry")
+    remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$entry")
+    remote_port=$(jq -r '.remotePort' <<<"$entry")
+    name="$ssh_host"
+    existing=$(cat "$config_file")
+    id=$(new_tunnel_id "$name" "$existing")
+    new_tunnel=$(jq -n \
+      --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+      --argjson localPort "$lp" --arg remoteHost "$remote_host" \
+      --argjson remotePort "$remote_port" \
+      '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
+        remoteHost:$remoteHost, remotePort:$remotePort}')
+    write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
+  done
+}
+
 do_status() {
+  local discovered
+  discovered=$(discover_foreign_ssh_tunnels)
+  auto_adopt_new_ports "$discovered"
+
   local tunnels active_map="{}"
-  tunnels=$(cat "$config_file")
+  tunnels=$(cat "$config_file")   # fresh read — may have just grown
 
   while IFS=$'\t' read -r id ssh_host local_port; do
     [[ -z "$id" ]] && continue
@@ -289,13 +329,11 @@ do_status() {
     active_map=$(jq --arg id "$id" --argjson active "$active" '. + {($id): $active}' <<<"$active_map")
   done < <(jq -r '.tunnels[] | [.id, .sshHost, .localPort] | @tsv' <<<"$tunnels")
 
-  local tunnels_with_active discovered
+  local tunnels_with_active
   tunnels_with_active=$(jq --argjson active_map "$active_map" \
     '.tunnels | map(. + {active: ($active_map[.id] // false)})' <<<"$tunnels")
-  discovered=$(discover_foreign_ssh_tunnels)
 
-  jq -n --argjson tunnels "$tunnels_with_active" --argjson discovered "$discovered" \
-    '{tunnels: $tunnels, discovered: $discovered}'
+  jq -n --argjson tunnels "$tunnels_with_active" '{tunnels: $tunnels}'
 }
 
 # ---------------------------------------------------------------- start/stop
@@ -411,17 +449,6 @@ safe_kill_verified() {   # $1=pid $2=expected_starttime; returns 1 if still aliv
   fi
   verify && return 1
   return 0
-}
-
-do_stop_foreign() {
-  local pid="$1" expected="$2"
-  [[ "$pid" =~ ^[0-9]+$ && "$expected" =~ ^[0-9]+$ ]] || fail "invalid pid/start time"
-  if safe_kill_verified "$pid" "$expected"; then
-    printf '{"pid":%s,"stopped":true}\n' "$pid"
-  else
-    printf '{"pid":%s,"stopped":false,"error":"process did not exit"}\n' "$pid" >&2
-    exit 4
-  fi
 }
 
 # ---------------------------------------------------------------- crud
@@ -555,7 +582,6 @@ case "$action" in
   start)          with_lock do_start "${1:?tunnel id required}" ;;
   stop)           with_lock do_stop "${1:?tunnel id required}" ;;
   status)         with_lock do_status ;;
-  stop-foreign)   do_stop_foreign "${1:?pid required}" "${2:?start time required}" ;;
   list-ssh-hosts) do_list_ssh_hosts ;;
   add)            with_lock do_add "${1:?tunnel json required}" ;;
   update)         with_lock do_update "${1:?tunnel id required}" "${2:?tunnel json required}" ;;

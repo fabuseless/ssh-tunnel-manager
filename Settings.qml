@@ -23,9 +23,6 @@ Item {
 
   property bool opened: false
   property string editId: ""   // "" means create mode
-  // Set only for a create-mode open triggered by "Adopt" on a discovered
-  // foreign tunnel — {name, sshHost, localPort, remoteHost, remotePort}.
-  property var pendingPrefill: null
 
   property string nameDraft: ""
   property string sshHostDraft: ""
@@ -53,10 +50,8 @@ Item {
     try {
       var payload = payloadJson ? JSON.parse(payloadJson) : {}
       root.editId = String(payload.editId || "")
-      root.pendingPrefill = (!root.editId && payload.prefill) ? payload.prefill : null
     } catch (e) {
       root.editId = ""
-      root.pendingPrefill = null
     }
     root.resetDrafts()
     if (root.service) root.service.refreshSshHosts()
@@ -85,15 +80,6 @@ Item {
         root.remotePortDraft = String(tunnel.remotePort)
         return
       }
-    }
-    if (!root.editing && root.pendingPrefill) {
-      var p = root.pendingPrefill
-      root.nameDraft = String(p.name || "")
-      root.sshHostDraft = String(p.sshHost || "")
-      root.localPortDraft = String(p.localPort || "")
-      root.remoteHostDraft = String(p.remoteHost || "127.0.0.1")
-      root.remotePortDraft = String(p.remotePort || "")
-      return
     }
     root.nameDraft = ""
     root.sshHostDraft = ""
@@ -224,17 +210,6 @@ Item {
           }
 
           PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
-
-          Text {
-            textFormat: Text.PlainText
-            Layout.fillWidth: true
-            visible: !root.editing && !!root.pendingPrefill
-            text: "Adopted from a running tunnel — it keeps running until you stop it separately."
-            wrapMode: Text.WordWrap
-            color: Color.muted
-            font.family: root.family
-            font.pixelSize: Style.font.caption
-          }
 
           ScrollView {
             Layout.fillWidth: true

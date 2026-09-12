@@ -34,12 +34,11 @@ QtObject {
 
   readonly property int pollIntervalSec: root.intSetting("pollIntervalSec", 7, 3, 120)
 
-  // [{id, name, sshHost, localPort, remoteHost, remotePort, active}]
+  // [{id, name, sshHost, localPort, remoteHost, remotePort, active}].
+  // tunnel-ctl silently auto-adopts any foreign ssh -L process it finds
+  // running (one not spawned by this plugin) as a normal entry here — from
+  // this side there is no such thing as a "foreign" tunnel to track.
   property var tunnels: []
-  // [{pid, startTicks, sshHost, localPort, remoteHost, remotePort, bindAddress}]
-  // — foreign ssh -L processes found on the system, not created through
-  // this plugin. Recomputed fresh on every status poll; never persisted.
-  property var discoveredTunnels: []
   property var sshHosts: []
   property string lastError: ""
 
@@ -144,9 +143,8 @@ QtObject {
       }
       try {
         var parsed = JSON.parse(stdout)
-        if (parsed && Array.isArray(parsed.tunnels) && Array.isArray(parsed.discovered)) {
+        if (parsed && Array.isArray(parsed.tunnels)) {
           root.tunnels = parsed.tunnels
-          root.discoveredTunnels = parsed.discovered
           root.lastError = ""
         }
       } catch (e) {
@@ -247,35 +245,6 @@ QtObject {
         onDone(false, root.extractError(stdout, stderr, "Could not delete tunnel."))
       }
     })
-  }
-
-  // ------------------------------------------------------------ foreign tunnels
-
-  // Discovered entries have no `id` to key against, so this is kept as its
-  // own map (keyed by pid, as a string) rather than folded into
-  // pendingToggles.
-  property var pendingForeignStops: ({})
-  property int pendingForeignStopRevision: 0
-
-  function isForeignStopPending(pid) {
-    root.pendingForeignStopRevision
-    return root.pendingForeignStops[String(pid)] !== undefined
-  }
-
-  function stopForeignTunnel(pid, startTicks) {
-    var key = String(pid)
-    if (root.pendingForeignStops[key] !== undefined) return
-    root.pendingForeignStops[key] = true
-    root.pendingForeignStopRevision++
-    root.controller.runAction(["stop-foreign", String(pid), String(startTicks)],
-      function(exitCode, stdout, stderr) {
-        delete root.pendingForeignStops[key]
-        root.pendingForeignStopRevision++
-        if (exitCode !== 0) {
-          root.lastError = root.extractError(stdout, stderr, "Could not stop tunnel.")
-        }
-        root.refreshStatus()
-      })
   }
 
   Component.onCompleted: {
