@@ -276,33 +276,65 @@ is_tunnel_active() {
 # the same write_config/validate_whole path do_add uses — no special-cased
 # storage, no new validation logic. From the next read of tunnels.json
 # onward it is a completely ordinary entry.
+#
+# A definition with no control socket yet is still foreign-backed: the
+# process actually listening on its local port could have been replaced by
+# a completely different manual command since it was first adopted (same
+# port, different destination). Since a socketless entry's "active" state
+# already comes from a fresh port_has_listener probe every poll (see
+# is_tunnel_active), re-sync its sshHost/remoteHost/remotePort from that
+# same fresh discovery scan too, so stored details can't silently drift
+# from what's actually running. A definition WITH a live control socket is
+# never touched here — that process is guaranteed to be the one we spawned
+# from this exact config, so there is nothing to drift.
 auto_adopt_new_ports() {
   local discovered="$1" count i
   count=$(jq 'length' <<<"$discovered")
   for ((i = 0; i < count; i++)); do
-    local entry lp
+    local entry lp existing_tunnel
     entry=$(jq -c ".[$i]" <<<"$discovered")
     lp=$(jq -r '.localPort' <<<"$entry")
+    existing_tunnel=$(jq -c --argjson p "$lp" '.tunnels[]? | select(.localPort == $p)' \
+      "$config_file" 2>/dev/null) || existing_tunnel=""
 
-    if jq -e --argjson p "$lp" '.tunnels[]? | select(.localPort == $p)' \
-        "$config_file" >/dev/null 2>&1; then
-      continue   # already tracked (socket-active or port-fallback-active)
-    fi
-
-    local ssh_host remote_host remote_port name id existing new_tunnel
+    local ssh_host remote_host remote_port
     ssh_host=$(jq -r '.sshHost' <<<"$entry")
     remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$entry")
     remote_port=$(jq -r '.remotePort' <<<"$entry")
-    name="$ssh_host"
-    existing=$(cat "$config_file")
-    id=$(new_tunnel_id "$name" "$existing")
-    new_tunnel=$(jq -n \
-      --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
-      --argjson localPort "$lp" --arg remoteHost "$remote_host" \
-      --argjson remotePort "$remote_port" \
-      '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
-        remoteHost:$remoteHost, remotePort:$remotePort}')
-    write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
+
+    if [[ -z "$existing_tunnel" ]]; then
+      local name id config_now new_tunnel
+      name="$ssh_host"
+      config_now=$(cat "$config_file")
+      id=$(new_tunnel_id "$name" "$config_now")
+      new_tunnel=$(jq -n \
+        --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+        --argjson localPort "$lp" --arg remoteHost "$remote_host" \
+        --argjson remotePort "$remote_port" \
+        '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
+          remoteHost:$remoteHost, remotePort:$remotePort}')
+      write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
+      continue
+    fi
+
+    local id socket
+    id=$(jq -r '.id' <<<"$existing_tunnel")
+    socket=$(control_socket_for "$id")
+    [[ -S "$socket" ]] && continue   # live control socket: authoritative, never resync
+
+    local cur_host cur_rhost cur_rport
+    cur_host=$(jq -r '.sshHost' <<<"$existing_tunnel")
+    cur_rhost=$(jq -r '.remoteHost' <<<"$existing_tunnel")
+    cur_rport=$(jq -r '.remotePort' <<<"$existing_tunnel")
+    if [[ "$cur_host" != "$ssh_host" || "$cur_rhost" != "$remote_host" \
+          || "$cur_rport" != "$remote_port" ]]; then
+      local patch
+      patch=$(jq -n --arg sshHost "$ssh_host" --arg remoteHost "$remote_host" \
+        --argjson remotePort "$remote_port" \
+        '{sshHost:$sshHost, remoteHost:$remoteHost, remotePort:$remotePort}')
+      write_config '.tunnels |= map(if .id == $id then (. + $patch) else . end)' \
+        --arg id "$id" --argjson patch "$patch"
+    fi
   done
 }
 
