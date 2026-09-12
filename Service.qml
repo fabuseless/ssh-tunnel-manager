@@ -36,6 +36,10 @@ QtObject {
 
   // [{id, name, sshHost, localPort, remoteHost, remotePort, active}]
   property var tunnels: []
+  // [{pid, startTicks, sshHost, localPort, remoteHost, remotePort, bindAddress}]
+  // — foreign ssh -L processes found on the system, not created through
+  // this plugin. Recomputed fresh on every status poll; never persisted.
+  property var discoveredTunnels: []
   property var sshHosts: []
   property string lastError: ""
 
@@ -140,8 +144,9 @@ QtObject {
       }
       try {
         var parsed = JSON.parse(stdout)
-        if (Array.isArray(parsed)) {
-          root.tunnels = parsed
+        if (parsed && Array.isArray(parsed.tunnels) && Array.isArray(parsed.discovered)) {
+          root.tunnels = parsed.tunnels
+          root.discoveredTunnels = parsed.discovered
           root.lastError = ""
         }
       } catch (e) {
@@ -242,6 +247,35 @@ QtObject {
         onDone(false, root.extractError(stdout, stderr, "Could not delete tunnel."))
       }
     })
+  }
+
+  // ------------------------------------------------------------ foreign tunnels
+
+  // Discovered entries have no `id` to key against, so this is kept as its
+  // own map (keyed by pid, as a string) rather than folded into
+  // pendingToggles.
+  property var pendingForeignStops: ({})
+  property int pendingForeignStopRevision: 0
+
+  function isForeignStopPending(pid) {
+    root.pendingForeignStopRevision
+    return root.pendingForeignStops[String(pid)] !== undefined
+  }
+
+  function stopForeignTunnel(pid, startTicks) {
+    var key = String(pid)
+    if (root.pendingForeignStops[key] !== undefined) return
+    root.pendingForeignStops[key] = true
+    root.pendingForeignStopRevision++
+    root.controller.runAction(["stop-foreign", String(pid), String(startTicks)],
+      function(exitCode, stdout, stderr) {
+        delete root.pendingForeignStops[key]
+        root.pendingForeignStopRevision++
+        if (exitCode !== 0) {
+          root.lastError = root.extractError(stdout, stderr, "Could not stop tunnel.")
+        }
+        root.refreshStatus()
+      })
   }
 
   Component.onCompleted: {

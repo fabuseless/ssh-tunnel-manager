@@ -6,7 +6,12 @@
 # Actions:
 #   start <id>                 start a tunnel (ControlMaster spawn, idempotent)
 #   stop <id>                  tear a tunnel down (idempotent)
-#   status                     JSON: all tunnel defs + live "active" state
+#   status                     JSON {tunnels, discovered}: managed tunnel
+#                               defs + live "active" state, plus foreign
+#                               ssh -L processes found running on the system
+#   stop-foreign <pid> <startTicks>
+#                               verified-kill a foreign (non-plugin) ssh -L
+#                               process discovered via `status`
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition
@@ -15,7 +20,24 @@
 # Security invariants (see plugin README for the full rationale):
 #   - every ssh invocation is an argv array, never a shell string
 #   - host/port fields are re-validated here even if a caller already did
-#   - liveness/teardown use ssh's own ControlMaster socket, never raw PIDs
+#   - liveness/teardown use ssh's own ControlMaster socket, never raw PIDs,
+#     with ONE narrow, explicitly scoped exception:
+#   - killing a *foreign* (non-plugin) ssh -L process — via `stop-foreign`
+#     directly, or via `do_stop`'s same-logic fallback for a just-adopted,
+#     not-yet-restarted definition — is only ever a candidate if its argv
+#     does NOT contain our own `-S $runtime_dir/*.sock` (fixed at spawn
+#     time, independent of `-O check` health, so a plugin-owned tunnel can
+#     never reach this path). Immediately before SIGTERM, and again before
+#     any escalation to SIGKILL, the target's live /proc/<pid>/stat `comm`
+#     and start-time are re-read and must still exactly match what was
+#     recorded at discovery time; a recycled pid is treated as "already
+#     gone" and never signaled. SIGTERM first, SIGKILL only after a bounded
+#     (~2s) grace period if still verified as the same process. Only the
+#     single pid is signaled, never a process group. The kernel's own
+#     UID-ownership check on kill(2) is an independent backstop underneath
+#     all of this.
+#   - the /proc scan and the port-listener probe used for discovery/display
+#     are read-only, same-uid, time-bounded, and cannot hang the status poll
 #   - tunnels.json writes are locked, atomically written, and re-validated
 #     as a whole file before ever replacing the previous version
 
@@ -115,23 +137,148 @@ control_socket_for() {
   printf '%s/%s.sock' "$runtime_dir" "$1"
 }
 
+# ---------------------------------------------------------- /proc helpers
+
+# Safe /proc/<pid>/stat parsing: `comm` (field 2) can itself contain spaces
+# and parens, so a naive `awk '{print $22}'` is not safe in general. The
+# kernel guarantees the *last* ')' in the line is comm's true closing paren
+# — locate the field boundaries from there instead of by raw whitespace
+# splitting the whole line.
+read_proc_stat() {   # sets proc_comm, proc_starttime; returns 1 if pid gone
+  local pid="$1" line
+  line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  [[ -n "$line" ]] || return 1
+  local head="${line%)*}"        # shortest )* suffix removed -> up to last ')'
+  proc_comm="${head#*(}"          # strip through first '(' -> comm, verbatim
+  local rest="${line##*)}"       # everything after the last ')'
+  local -a f
+  read -r -a f <<< "$rest"       # f[0]=state(field3) ... f[19]=starttime(field22)
+  proc_starttime="${f[19]:-}"
+  [[ "$proc_starttime" =~ ^[0-9]+$ ]] || return 1
+}
+
+# Parses an ssh -L spec: "port:host:hostport" or "bind:port:host:hostport".
+_parse_dash_L() {   # sets _L_bind, _L_port, _L_rhost, _L_rport
+  local spec="$1"; [[ -n "$spec" ]] || return 1
+  local -a p
+  IFS=':' read -r -a p <<< "$spec"
+  case "${#p[@]}" in
+    3) _L_bind="";        _L_port="${p[0]}"; _L_rhost="${p[1]}"; _L_rport="${p[2]}" ;;
+    4) _L_bind="${p[0]}"; _L_port="${p[1]}"; _L_rhost="${p[2]}"; _L_rport="${p[3]}" ;;
+    *) return 1 ;;   # IPv6 literals etc. — silently skipped, not mis-parsed
+  esac
+  [[ "$_L_port" =~ ^[0-9]+$ && "$_L_rport" =~ ^[0-9]+$ ]] || return 1
+}
+
+# ssh flags that consume the NEXT argv token as their value, when given in
+# bare "-o value" form rather than glued "-ovalue"/"-o=value".
+ssh_value_opt() {
+  case "$1" in
+    -B|-b|-c|-D|-E|-e|-F|-I|-i|-J|-L|-l|-m|-O|-o|-p|-Q|-R|-S|-W|-w) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Best-effort parse of one ssh process's argv (array $argv, argv[0]="ssh").
+# Sets is_ours, local_port, remote_host, remote_port, bind_addr, dest.
+# Known limitation: assumes flags/destination come before any trailing
+# remote command, and isn't a full getopt reimplementation of every
+# OpenSSH flag across every version — good enough for the plugin's own
+# -N-only invocations and realistic hand-typed ones.
+parse_ssh_argv() {
+  is_ours=false; local_port=""; remote_host=""; remote_port=""; bind_addr=""; dest=""
+  local -a consumed=()
+  local i n=${#argv[@]}
+  for (( i=1; i<n; i++ )); do
+    local tok="${argv[i]}"
+    case "$tok" in
+      "$runtime_dir"/*) is_ours=true ;;
+      -S"$runtime_dir"/*) is_ours=true ;;
+      -L|-L*)
+        local spec="${tok#-L}"
+        if [[ -z "$spec" ]]; then spec="${argv[i+1]:-}"; consumed[i+1]=1; fi
+        if _parse_dash_L "$spec"; then
+          bind_addr=$_L_bind; local_port=$_L_port
+          remote_host=$_L_rhost; remote_port=$_L_rport
+        fi
+        ;;
+      -*)
+        local opt="${tok:0:2}"
+        if [[ "$tok" == "$opt" ]] && ssh_value_opt "$opt"; then consumed[i+1]=1; fi
+        ;;
+    esac
+  done
+  for (( i=n-1; i>=1; i-- )); do
+    [[ "${argv[i]}" == "--" ]] && continue
+    [[ -n "${consumed[i]:-}" ]] && continue
+    [[ "${argv[i]}" == -* ]] && continue
+    dest="${argv[i]}"; break
+  done
+}
+
+# Scans /proc for ssh -L processes we did not spawn ourselves. Every helper
+# call here fails closed (`|| continue`) rather than a bare non-zero: under
+# `set -euo pipefail`, one unreadable/vanished /proc entry — routine, since
+# processes come and go constantly — must never abort the whole status poll.
+discover_foreign_ssh_tunnels() {
+  local out="[]" count=0
+  local pid_dir
+  for pid_dir in /proc/[0-9]*; do
+    local pid="${pid_dir#/proc/}"
+    read_proc_stat "$pid" || continue
+    [[ "$proc_comm" == "ssh" ]] || continue
+    local -a argv=()
+    mapfile -d '' -t argv < "$pid_dir/cmdline" 2>/dev/null || continue
+    (( ${#argv[@]} > 0 )) || continue
+
+    parse_ssh_argv
+    $is_ours && continue
+    [[ -n "$local_port" && -n "$dest" ]] || continue
+
+    out=$(jq --argjson pid "$pid" --argjson start "$proc_starttime" \
+      --arg dest "$dest" --argjson lp "$local_port" \
+      --arg rh "${remote_host:-}" --argjson rp "${remote_port:-null}" \
+      --arg bind "${bind_addr:-}" \
+      '. + [{pid:$pid, startTicks:$start, sshHost:$dest, localPort:$lp,
+             remoteHost:$rh, remotePort:$rp, bindAddress:$bind}]' <<<"$out")
+    count=$((count + 1))
+    (( count >= 50 )) && break   # cheap sanity cap, not a hard requirement
+  done
+  printf '%s' "$out"
+}
+
 # ---------------------------------------------------------------- status
 
+port_has_listener() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]] || return 1
+  # Bounded connect probe in its own subshell: fd 3 closes automatically on
+  # exit, so there is nothing to clean up and nothing that can hang.
+  timeout 0.3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null
+}
+
 is_tunnel_active() {
-  local ssh_host="$1" socket="$2"
-  [[ -S "$socket" ]] || return 1
-  ssh -S "$socket" -O check "$ssh_host" >/dev/null 2>&1
+  local ssh_host="$1" socket="$2" local_port="${3:-}"
+  if [[ -S "$socket" ]] && ssh -S "$socket" -O check "$ssh_host" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Fallback for a definition with no control socket yet — e.g. just
+  # adopted from a discovered foreign process, never started through us.
+  # Display-only: do_start's own idempotency check deliberately does NOT
+  # use this, so a real start attempt still gets a clean
+  # ExitOnForwardFailure error instead of an ambiguous no-op.
+  [[ -n "$local_port" ]] && port_has_listener "$local_port"
 }
 
 do_status() {
   local tunnels active_map="{}"
   tunnels=$(cat "$config_file")
 
-  while IFS=$'\t' read -r id ssh_host; do
+  while IFS=$'\t' read -r id ssh_host local_port; do
     [[ -z "$id" ]] && continue
     local socket active
     socket=$(control_socket_for "$id")
-    if is_tunnel_active "$ssh_host" "$socket"; then
+    if is_tunnel_active "$ssh_host" "$socket" "$local_port"; then
       active=true
     else
       active=false
@@ -140,10 +287,15 @@ do_status() {
       [[ -S "$socket" ]] && rm -f "$socket"
     fi
     active_map=$(jq --arg id "$id" --argjson active "$active" '. + {($id): $active}' <<<"$active_map")
-  done < <(jq -r '.tunnels[] | [.id, .sshHost] | @tsv' <<<"$tunnels")
+  done < <(jq -r '.tunnels[] | [.id, .sshHost, .localPort] | @tsv' <<<"$tunnels")
 
-  jq --argjson active_map "$active_map" \
-    '.tunnels | map(. + {active: ($active_map[.id] // false)})' <<<"$tunnels"
+  local tunnels_with_active discovered
+  tunnels_with_active=$(jq --argjson active_map "$active_map" \
+    '.tunnels | map(. + {active: ($active_map[.id] // false)})' <<<"$tunnels")
+  discovered=$(discover_foreign_ssh_tunnels)
+
+  jq -n --argjson tunnels "$tunnels_with_active" --argjson discovered "$discovered" \
+    '{tunnels: $tunnels, discovered: $discovered}'
 }
 
 # ---------------------------------------------------------------- start/stop
@@ -205,25 +357,71 @@ do_stop() {
   local id="$1"
   local tunnel
   tunnel=$(tunnel_by_id "$id") || fail "unknown tunnel: $id"
-  local ssh_host
+  local ssh_host local_port
   ssh_host=$(jq -r '.sshHost' <<<"$tunnel")
+  local_port=$(jq -r '.localPort' <<<"$tunnel")
   local socket
   socket=$(control_socket_for "$id")
 
-  if [[ ! -S "$socket" ]]; then
-    printf '{"id":%s,"active":false}\n' "$(jq -R . <<<"$id")"
-    return 0
+  if [[ -S "$socket" ]]; then
+    ssh -S "$socket" -O exit "$ssh_host" >/dev/null 2>&1 || true
+    local waited=0
+    while [[ -S "$socket" && $waited -lt 100 ]]; do
+      sleep 0.02
+      waited=$((waited + 1))
+    done
+    rm -f "$socket"
+  elif port_has_listener "$local_port"; then
+    # No control socket — this definition may still be backed by the
+    # original foreign process (e.g. just adopted, never yet started
+    # through us). Re-discover whatever is currently listening on this
+    # local port and apply the same verified-kill sequence a standalone
+    # foreign stop would use, rather than silently no-op'ing.
+    local match
+    match=$(discover_foreign_ssh_tunnels | jq -e --argjson p "$local_port" \
+      '.[] | select(.localPort == $p)') || match=""
+    if [[ -n "$match" ]]; then
+      safe_kill_verified "$(jq -r '.pid' <<<"$match")" "$(jq -r '.startTicks' <<<"$match")" || true
+    fi
   fi
-
-  ssh -S "$socket" -O exit "$ssh_host" >/dev/null 2>&1 || true
-
-  local waited=0
-  while [[ -S "$socket" && $waited -lt 100 ]]; do
-    sleep 0.02
-    waited=$((waited + 1))
-  done
-  rm -f "$socket"
   printf '{"id":%s,"active":false}\n' "$(jq -R . <<<"$id")"
+}
+
+# ---------------------------------------------------------------- foreign
+
+# Re-verifies the target immediately before every signal and every
+# escalation decision — never acts on a stale snapshot. Only the single pid
+# is signaled (no process-group kill): ssh -N -L doesn't fork workers in
+# this plugin's scope, so a narrow blast radius is correct here.
+safe_kill_verified() {   # $1=pid $2=expected_starttime; returns 1 if still alive after escalation
+  local pid="$1" expected="$2"
+  verify() {
+    read_proc_stat "$pid" && [[ "$proc_comm" == "ssh" && "$proc_starttime" == "$expected" ]]
+  }
+  verify || return 0   # already gone / pid recycled: nothing to do, not an error
+
+  kill -TERM -- "$pid" 2>/dev/null || true
+  local waited=0
+  while verify && [[ $waited -lt 100 ]]; do sleep 0.02; waited=$((waited + 1)); done
+
+  if verify; then
+    kill -KILL -- "$pid" 2>/dev/null || true
+    waited=0
+    while verify && [[ $waited -lt 50 ]]; do sleep 0.02; waited=$((waited + 1)); done
+  fi
+  verify && return 1
+  return 0
+}
+
+do_stop_foreign() {
+  local pid="$1" expected="$2"
+  [[ "$pid" =~ ^[0-9]+$ && "$expected" =~ ^[0-9]+$ ]] || fail "invalid pid/start time"
+  if safe_kill_verified "$pid" "$expected"; then
+    printf '{"pid":%s,"stopped":true}\n' "$pid"
+  else
+    printf '{"pid":%s,"stopped":false,"error":"process did not exit"}\n' "$pid" >&2
+    exit 4
+  fi
 }
 
 # ---------------------------------------------------------------- crud
@@ -357,6 +555,7 @@ case "$action" in
   start)          with_lock do_start "${1:?tunnel id required}" ;;
   stop)           with_lock do_stop "${1:?tunnel id required}" ;;
   status)         with_lock do_status ;;
+  stop-foreign)   do_stop_foreign "${1:?pid required}" "${2:?start time required}" ;;
   list-ssh-hosts) do_list_ssh_hosts ;;
   add)            with_lock do_add "${1:?tunnel json required}" ;;
   update)         with_lock do_update "${1:?tunnel id required}" "${2:?tunnel json required}" ;;

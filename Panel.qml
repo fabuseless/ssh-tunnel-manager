@@ -36,6 +36,25 @@ Panel {
       JSON.stringify({ editId: tunnelId || "" }))
   }
 
+  // Opens the create form pre-filled from a discovered foreign tunnel. The
+  // already-running foreign process is left untouched — adopting only
+  // saves a definition; it starts using the normal ControlMaster path the
+  // next time it's actually (re)started through the plugin.
+  function openAdopt(discovered) {
+    if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
+    close()
+    bar.shell.summon("bhh27.ssh-local-tunnels", JSON.stringify({
+      editId: "",
+      prefill: {
+        name: discovered.sshHost,
+        sshHost: discovered.sshHost,
+        localPort: discovered.localPort,
+        remoteHost: discovered.remoteHost || "127.0.0.1",
+        remotePort: discovered.remotePort
+      }
+    }))
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -249,6 +268,100 @@ Panel {
                   foreground: root.foreground
                   accent: Color.accent
                   onToggled: if (root.serviceReady) root.svc.toggleTunnel(modelData.id)
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          width: parent.width
+          foreground: root.foreground
+          visible: root.serviceReady && root.svc.discoveredTunnels.length > 0
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: root.serviceReady && root.svc.discoveredTunnels.length > 0
+          text: "OTHER ACTIVE TUNNELS"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        // Foreign ssh -L processes found running on the system, not
+        // created through this plugin — see Service.qml's
+        // discoveredTunnels. Stop uses a narrowly-scoped, pid+start-time
+        // verified kill (see bin/tunnel-ctl's security invariants); Adopt
+        // just saves a matching definition without touching the running
+        // process.
+        ScrollView {
+          id: discoveredScroller
+          visible: root.serviceReady && root.svc.discoveredTunnels.length > 0
+          width: parent.width
+          implicitHeight: Math.min(discoveredColumn.implicitHeight, Style.space(240))
+          clip: true
+          ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+          Column {
+            id: discoveredColumn
+            width: discoveredScroller.availableWidth
+            spacing: Style.spacing.md
+
+            Repeater {
+              model: root.serviceReady ? root.svc.discoveredTunnels : null
+
+              delegate: Row {
+                required property var modelData
+                width: discoveredColumn.width
+                spacing: Style.spacing.md
+
+                readonly property bool stopBusy: root.serviceReady
+                  && root.svc.isForeignStopPending(modelData.pid)
+
+                Column {
+                  width: parent.width - stopBtn.width - adoptBtn.width - (Style.spacing.md * 2)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: modelData.sshHost + ":" + modelData.localPort
+                      + " → " + (modelData.remoteHost || "unknown") + ":" + modelData.remotePort
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                    width: parent.width
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "not managed by this plugin"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                    width: parent.width
+                  }
+                }
+
+                PanelActionButton {
+                  id: adoptBtn
+                  iconText: "✎"   // pencil, matching the managed-list edit affordance
+                  tooltipText: "Adopt into managed list"
+                  foreground: Qt.darker(root.foreground, 1.4)
+                  fontFamily: root.fontFamily
+                  onClicked: root.openAdopt(modelData)
+                }
+
+                PanelActionButton {
+                  id: stopBtn
+                  iconText: "⏻"
+                  tooltipText: "Stop"
+                  foreground: Color.urgent
+                  fontFamily: root.fontFamily
+                  enabled: !stopBusy
+                  onClicked: if (root.serviceReady) {
+                    root.svc.stopForeignTunnel(modelData.pid, modelData.startTicks)
+                  }
                 }
               }
             }
