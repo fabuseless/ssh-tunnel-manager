@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+# tunnel-ctl — authoritative state/process owner for the SSH Local Tunnels
+# Omarchy plugin. Every read/write of tunnels.json and every ssh invocation
+# goes through this script; QML never touches either directly.
+#
+# Actions:
+#   start <id>                 start a tunnel (ControlMaster spawn, idempotent)
+#   stop <id>                  tear a tunnel down (idempotent)
+#   status                     JSON: all tunnel defs + live "active" state
+#   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
+#   add <json>                 validate + append a new tunnel definition
+#   update <id> <json>         validate + patch an existing tunnel definition
+#   remove <id>                stop if running, then delete the definition
+#   set-favorite <id>          clear favorite on all others, set on <id>
+#   toggle-favorite            start/stop whichever tunnel is favorite
+#
+# Security invariants (see plugin README for the full rationale):
+#   - every ssh invocation is an argv array, never a shell string
+#   - host/port fields are re-validated here even if a caller already did
+#   - liveness/teardown use ssh's own ControlMaster socket, never raw PIDs
+#   - tunnels.json writes are locked, atomically written, and re-validated
+#     as a whole file before ever replacing the previous version
+
+set -euo pipefail
+umask 077
+
+: "${XDG_RUNTIME_DIR:?SSH Local Tunnels requires XDG_RUNTIME_DIR}"
+
+plugin_id="bhh27.ssh-local-tunnels"
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/$plugin_id"
+runtime_dir="$XDG_RUNTIME_DIR/$plugin_id"
+config_file="$data_dir/tunnels.json"
+lock_file="$data_dir/tunnels.lock"
+ssh_config="$HOME/.ssh/config"
+
+fail() {
+  echo "tunnel-ctl: $*" >&2
+  exit 1
+}
+
+ensure_dirs() {
+  install -d -m 700 "$data_dir" "$runtime_dir"
+}
+
+ensure_config() {
+  if [[ ! -f "$config_file" ]]; then
+    printf '{"schemaVersion":1,"tunnels":[]}\n' > "$config_file"
+  fi
+}
+
+# Whole-file schema check: shape, per-field types/ranges/regex, uniqueness,
+# and the reserved-key guard — run against a candidate file before it is ever
+# allowed to replace the live config.
+validate_whole() {
+  local file="$1"
+  jq -e '
+    def valid_id:
+      type == "string"
+      and test("^[A-Za-z0-9_-]{1,64}$")
+      and (IN("__proto__", "constructor", "prototype") | not);
+    def valid_str_field:
+      type == "string" and length > 0 and length <= 255
+      and (test("[ \t\r\n]") | not);
+    def valid_port:
+      type == "number" and (floor == .) and . >= 1 and . <= 65535;
+    def valid_tunnel:
+      (.id | valid_id)
+      and (.name | type == "string" and length > 0 and length <= 100)
+      and (.sshHost | valid_str_field)
+      and (.localPort | valid_port)
+      and (.remoteHost | valid_str_field)
+      and (.remotePort | valid_port)
+      and (.favorite | type == "boolean");
+    (.schemaVersion == 1)
+    and (.tunnels | type == "array")
+    and (.tunnels | all(.[]; valid_tunnel))
+    and ((.tunnels | map(.id) | unique | length) == (.tunnels | length))
+    and ((.tunnels | map(.localPort) | unique | length) == (.tunnels | length))
+    and ((.tunnels | map(select(.favorite == true)) | length) <= 1)
+  ' "$file" >/dev/null 2>&1
+}
+
+# Applies a jq filter to the current config, validates the WHOLE result,
+# and only then atomically replaces the file. Must be called with the lock
+# already held (see with_lock).
+write_config() {
+  local filter="$1"
+  shift
+  local tmp
+  tmp=$(mktemp "$data_dir/tunnels.XXXXXX")
+  if ! jq "$filter" "$@" "$config_file" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    fail "config mutation failed"
+  fi
+  if ! validate_whole "$tmp"; then
+    rm -f "$tmp"
+    fail "refusing to write an invalid or unsafe config"
+  fi
+  mv "$tmp" "$config_file"
+}
+
+# Runs "$@" with the config lock held and the config file guaranteed to
+# exist. Read-only callers use this too, so a read can never race a
+# concurrent first-time config creation.
+with_lock() {
+  ensure_dirs
+  exec 9>"$lock_file"
+  flock -x 9
+  ensure_config
+  "$@"
+}
+
+tunnel_by_id() {
+  local id="$1"
+  jq -e --arg id "$id" '.tunnels[] | select(.id == $id)' "$config_file"
+}
+
+control_socket_for() {
+  printf '%s/%s.sock' "$runtime_dir" "$1"
+}
+
+# ---------------------------------------------------------------- status
+
+is_tunnel_active() {
+  local ssh_host="$1" socket="$2"
+  [[ -S "$socket" ]] || return 1
+  ssh -S "$socket" -O check "$ssh_host" >/dev/null 2>&1
+}
+
+do_status() {
+  local tunnels active_map="{}"
+  tunnels=$(cat "$config_file")
+
+  while IFS=$'\t' read -r id ssh_host; do
+    [[ -z "$id" ]] && continue
+    local socket active
+    socket=$(control_socket_for "$id")
+    if is_tunnel_active "$ssh_host" "$socket"; then
+      active=true
+    else
+      active=false
+      # Stale socket from an unclean exit — clean it up so the next start
+      # doesn't have to special-case a dead file.
+      [[ -S "$socket" ]] && rm -f "$socket"
+    fi
+    active_map=$(jq --arg id "$id" --argjson active "$active" '. + {($id): $active}' <<<"$active_map")
+  done < <(jq -r '.tunnels[] | [.id, .sshHost] | @tsv' <<<"$tunnels")
+
+  jq --argjson active_map "$active_map" \
+    '.tunnels | map(. + {active: ($active_map[.id] // false)})' <<<"$tunnels"
+}
+
+# ---------------------------------------------------------------- start/stop
+
+do_start() {
+  local id="$1"
+  local tunnel
+  tunnel=$(tunnel_by_id "$id") || fail "unknown tunnel: $id"
+
+  local ssh_host local_port remote_host remote_port
+  ssh_host=$(jq -r '.sshHost' <<<"$tunnel")
+  local_port=$(jq -r '.localPort' <<<"$tunnel")
+  remote_host=$(jq -r '.remoteHost' <<<"$tunnel")
+  remote_port=$(jq -r '.remotePort' <<<"$tunnel")
+
+  # Defense in depth: re-check even though validate_whole already passed
+  # this data on write. Never build the ssh argv from unchecked strings.
+  [[ "$ssh_host" =~ ^[^[:space:]]{1,255}$ ]] || fail "unsafe sshHost in config"
+  [[ "$remote_host" =~ ^[^[:space:]]{1,255}$ ]] || fail "unsafe remoteHost in config"
+  [[ "$local_port" =~ ^[0-9]+$ && "$local_port" -ge 1 && "$local_port" -le 65535 ]] \
+    || fail "unsafe localPort in config"
+  [[ "$remote_port" =~ ^[0-9]+$ && "$remote_port" -ge 1 && "$remote_port" -le 65535 ]] \
+    || fail "unsafe remotePort in config"
+
+  local socket
+  socket=$(control_socket_for "$id")
+
+  if is_tunnel_active "$ssh_host" "$socket"; then
+    printf '{"id":%s,"active":true}\n' "$(jq -R . <<<"$id")"
+    return 0
+  fi
+  rm -f "$socket"
+
+  setsid ssh -N -M -S "$socket" \
+    -o ExitOnForwardFailure=yes \
+    -o ControlPersist=no \
+    -o BatchMode=yes \
+    -L "${local_port}:${remote_host}:${remote_port}" \
+    -- "$ssh_host" \
+    >/dev/null 2>>"$runtime_dir/$id.log" &
+  disown
+
+  local waited=0
+  while [[ ! -S "$socket" && $waited -lt 150 ]]; do
+    sleep 0.02
+    waited=$((waited + 1))
+  done
+
+  if [[ -S "$socket" ]] && is_tunnel_active "$ssh_host" "$socket"; then
+    printf '{"id":%s,"active":true}\n' "$(jq -R . <<<"$id")"
+  else
+    printf '{"id":%s,"active":false,"error":"tunnel failed to start (see %s.log)"}\n' \
+      "$(jq -R . <<<"$id")" "$id" >&2
+    exit 4
+  fi
+}
+
+do_stop() {
+  local id="$1"
+  local tunnel
+  tunnel=$(tunnel_by_id "$id") || fail "unknown tunnel: $id"
+  local ssh_host
+  ssh_host=$(jq -r '.sshHost' <<<"$tunnel")
+  local socket
+  socket=$(control_socket_for "$id")
+
+  if [[ ! -S "$socket" ]]; then
+    printf '{"id":%s,"active":false}\n' "$(jq -R . <<<"$id")"
+    return 0
+  fi
+
+  ssh -S "$socket" -O exit "$ssh_host" >/dev/null 2>&1 || true
+
+  local waited=0
+  while [[ -S "$socket" && $waited -lt 100 ]]; do
+    sleep 0.02
+    waited=$((waited + 1))
+  done
+  rm -f "$socket"
+  printf '{"id":%s,"active":false}\n' "$(jq -R . <<<"$id")"
+}
+
+# ---------------------------------------------------------------- crud
+
+new_tunnel_id() {
+  local name="$1" existing="$2" slug attempt id
+  slug=$(tr '[:upper:]' '[:lower:]' <<<"$name" | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//')
+  [[ -n "$slug" ]] || slug="tunnel"
+  slug="${slug:0:40}"
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    id="${slug}-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+    if ! jq -e --arg id "$id" '.tunnels[] | select(.id == $id)' <<<"$existing" >/dev/null 2>&1; then
+      printf '%s' "$id"
+      return 0
+    fi
+  done
+  fail "could not allocate a unique tunnel id"
+}
+
+validate_input_fields() {
+  # Validates a proposed tunnel payload's user-supplied fields before they
+  # ever reach jq-based config construction or an ssh argv.
+  local json="$1"
+  jq -e '
+    (.name | type == "string" and length > 0 and length <= 100)
+    and (.sshHost | type == "string" and length > 0 and length <= 255
+         and (test("[ \t\r\n]") | not))
+    and (.localPort | type == "number" and (floor == .) and . >= 1 and . <= 65535)
+    and ((.remoteHost // "127.0.0.1") | type == "string" and length > 0 and length <= 255
+         and (test("[ \t\r\n]") | not))
+    and (.remotePort | type == "number" and (floor == .) and . >= 1 and . <= 65535)
+  ' <<<"$json" >/dev/null 2>&1
+}
+
+do_add() {
+  local json="$1"
+  validate_input_fields "$json" || fail "invalid tunnel definition"
+
+  local existing name ssh_host local_port remote_host remote_port favorite id
+  existing=$(cat "$config_file")
+  name=$(jq -r '.name' <<<"$json")
+  ssh_host=$(jq -r '.sshHost' <<<"$json")
+  local_port=$(jq -r '.localPort' <<<"$json")
+  remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")
+  remote_port=$(jq -r '.remotePort' <<<"$json")
+  favorite=$(jq -r '(.favorite // false)' <<<"$json")
+
+  if jq -e --argjson p "$local_port" '.tunnels[] | select(.localPort == $p)' <<<"$existing" >/dev/null 2>&1; then
+    fail "local port $local_port is already used by another tunnel"
+  fi
+
+  id=$(new_tunnel_id "$name" "$existing")
+
+  local new_tunnel
+  new_tunnel=$(jq -n \
+    --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+    --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
+    --argjson remotePort "$remote_port" --argjson favorite "$favorite" \
+    '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
+      remoteHost: $remoteHost, remotePort: $remotePort, favorite: $favorite}')
+
+  write_config '
+    .tunnels += [$newtunnel]
+    | if ($newtunnel.favorite == true)
+      then .tunnels |= map(if .id == $newtunnel.id then . else (.favorite = false) end)
+      else . end
+  ' --argjson newtunnel "$new_tunnel"
+
+  echo "$new_tunnel"
+}
+
+do_update() {
+  local id="$1" json="$2"
+  tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
+  validate_input_fields "$json" || fail "invalid tunnel definition"
+
+  local existing local_port favorite
+  existing=$(cat "$config_file")
+  local_port=$(jq -r '.localPort' <<<"$json")
+  favorite=$(jq -r '(.favorite // false)' <<<"$json")
+
+  if jq -e --arg id "$id" --argjson p "$local_port" \
+      '.tunnels[] | select(.localPort == $p and .id != $id)' <<<"$existing" >/dev/null 2>&1; then
+    fail "local port $local_port is already used by another tunnel"
+  fi
+
+  local patch
+  patch=$(jq -n \
+    --arg name "$(jq -r '.name' <<<"$json")" \
+    --arg sshHost "$(jq -r '.sshHost' <<<"$json")" \
+    --argjson localPort "$local_port" \
+    --arg remoteHost "$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")" \
+    --argjson remotePort "$(jq -r '.remotePort' <<<"$json")" \
+    --argjson favorite "$favorite" \
+    '{name: $name, sshHost: $sshHost, localPort: $localPort,
+      remoteHost: $remoteHost, remotePort: $remotePort, favorite: $favorite}')
+
+  write_config '
+    .tunnels |= map(if .id == $id then (. + $patch) else . end)
+    | if ($patch.favorite == true)
+      then .tunnels |= map(if .id == $id then . else (.favorite = false) end)
+      else . end
+  ' --arg id "$id" --argjson patch "$patch"
+
+  tunnel_by_id "$id"
+}
+
+do_remove() {
+  local id="$1"
+  tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
+  do_stop "$id" >/dev/null || true
+  write_config '.tunnels |= map(select(.id != $id))' --arg id "$id"
+}
+
+do_set_favorite() {
+  local id="$1"
+  tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
+  write_config '.tunnels |= map(.favorite = (.id == $id))' --arg id "$id"
+}
+
+do_toggle_favorite() {
+  local favorite
+  favorite=$(jq -e '.tunnels[] | select(.favorite == true)' "$config_file") \
+    || fail "no favorite tunnel is set"
+  local id ssh_host socket
+  id=$(jq -r '.id' <<<"$favorite")
+  ssh_host=$(jq -r '.sshHost' <<<"$favorite")
+  socket=$(control_socket_for "$id")
+  if is_tunnel_active "$ssh_host" "$socket"; then
+    do_stop "$id"
+  else
+    do_start "$id"
+  fi
+}
+
+# ---------------------------------------------------------------- ssh config
+
+do_list_ssh_hosts() {
+  if [[ ! -f "$ssh_config" ]]; then
+    printf '[]\n'
+    return 0
+  fi
+  awk '
+    { line = $0; sub(/(^|[^\\])#.*/, "", line) }
+    { n = split(line, tok, /[ \t]+/) }
+    { if (n >= 2 && tolower(tok[1]) == "host") {
+        for (i = 2; i <= n; i++) if (tok[i] != "") print tok[i]
+      }
+    }
+  ' "$ssh_config" \
+    | grep -Ev '[*?]|^!' \
+    | grep -E '^[A-Za-z0-9._-]+$' \
+    | awk '!seen[$0]++' \
+    | jq -R -s 'split("\n") | map(select(length > 0))'
+}
+
+# ---------------------------------------------------------------- dispatch
+
+action="${1-}"
+[[ -n "$action" ]] || fail "an action is required"
+shift || true
+
+case "$action" in
+  start)          with_lock do_start "${1:?tunnel id required}" ;;
+  stop)           with_lock do_stop "${1:?tunnel id required}" ;;
+  status)         with_lock do_status ;;
+  list-ssh-hosts) do_list_ssh_hosts ;;
+  add)            with_lock do_add "${1:?tunnel json required}" ;;
+  update)         with_lock do_update "${1:?tunnel id required}" "${2:?tunnel json required}" ;;
+  remove)         with_lock do_remove "${1:?tunnel id required}" ;;
+  set-favorite)   with_lock do_set_favorite "${1:?tunnel id required}" ;;
+  toggle-favorite) with_lock do_toggle_favorite ;;
+  *) fail "unknown action: $action" ;;
+esac

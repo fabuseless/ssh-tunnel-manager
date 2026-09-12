@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "bhh27.ssh-local-tunnels",
+  "name": "SSH Local Tunnels",
+  "version": "0.1.0",
+  "author": "bhh27",
+  "license": "MIT",
+  "description": "Create, monitor, and toggle local SSH port-forward tunnels from the bar, using your existing ~/.ssh/config and SSH agent.",
+  "kinds": ["service", "bar-widget", "overlay"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml",
+    "overlay": "Settings.qml"
+  },
+  "barWidget": {
+    "displayName": "SSH Local Tunnels",
+    "description": "Favorite tunnel toggle plus full tunnel list.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "pollIntervalSec": 7 },
+    "schema": [
+      {
+        "key": "pollIntervalSec",
+        "type": "integer",
+        "label": "Status refresh interval (seconds)",
+        "min": 3,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 7
+      }
+    ]
+  }
+}
