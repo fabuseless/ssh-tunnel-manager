@@ -81,6 +81,10 @@ Panel {
     text: root.icon
     foreground: root.barIconColor
     active: root.serviceReady && root.svc.lastError !== ""
+    tooltipText: root.serviceReady && root.svc.favoriteTunnel
+      ? (root.svc.favoriteActive ? "Favorite tunnel: on (right-click to turn off)"
+                                  : "Favorite tunnel: off (right-click to turn on)")
+      : "SSH Local Tunnels — click to manage"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
         if (root.serviceReady) root.svc.toggleFavorite()
@@ -89,15 +93,6 @@ Panel {
       } else {
         root.toggle()
       }
-    }
-
-    PanelToolTip {
-      visible: button.containsMouse
-      text: root.serviceReady && root.svc.favoriteTunnel
-        ? (root.svc.favoriteActive ? "Favorite tunnel: on (right-click to turn off)"
-                                    : "Favorite tunnel: off (right-click to turn on)")
-        : "SSH Local Tunnels — click to manage"
-      fontFamily: root.fontFamily
     }
   }
 
