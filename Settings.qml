@@ -202,6 +202,12 @@ Item {
       PanelKeyCatcher {
         id: keyCatcher
         anchors.fill: parent
+        // BorderSurface.padding only *computes* the insets; callers apply
+        // them — see hass/Settings.qml for the same convention.
+        anchors.topMargin: card.contentTopInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
+        anchors.rightMargin: card.contentRightInset
         onCloseRequested: root.dismiss()
 
         ColumnLayout {
