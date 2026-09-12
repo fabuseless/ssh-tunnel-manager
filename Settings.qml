@@ -220,7 +220,7 @@ Item {
             Column {
               id: fieldsColumn
               width: formColumn.width
-              spacing: Style.spacing.md
+              spacing: Style.spacing.xl
 
               Text {
                 textFormat: Text.PlainText
