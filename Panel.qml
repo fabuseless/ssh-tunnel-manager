@@ -147,7 +147,7 @@ Panel {
               spacing: Style.spacing.sm
 
               PanelActionButton {
-                iconText: "⚙"
+                iconText: ""   // fa-gear
                 tooltipText: "Preferences"
                 foreground: Qt.darker(root.foreground, 1.4)
                 fontFamily: root.fontFamily
