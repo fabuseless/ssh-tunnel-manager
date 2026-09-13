@@ -18,7 +18,12 @@
 #                               resync of already-tracked entries is not.
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
-#   update <id> <json>         validate + patch an existing tunnel definition
+#   update <id> <json>         validate + patch an existing tunnel definition.
+#                               if it was running, stops and restarts it
+#                               with the new settings (best-effort — a
+#                               failed restart still leaves the edit saved,
+#                               just shows inactive, same as any other
+#                               failed start)
 #   remove <id>                stop if running, then delete the definition
 #   get-prefs                  JSON {autoAdopt, killAutosshFully}
 #   set-prefs <json>           validate + patch preferences, returns get-prefs
@@ -684,6 +689,21 @@ do_update() {
     fail "local port $local_port is already used by another tunnel"
   fi
 
+  # Was it running BEFORE this edit? Checked against the pre-edit
+  # definition, since that's what the live control socket/listener
+  # actually corresponds to right now — an edit alone never touches the
+  # running process, so leaving this unchecked would silently desync the
+  # two: the UI would show the new settings as saved and "active", while
+  # traffic kept flowing to wherever the OLD process was actually
+  # pointed, with no indication anything was off.
+  local pre_tunnel pre_ssh_host pre_local_port pre_socket was_active
+  pre_tunnel=$(tunnel_by_id "$id")
+  pre_ssh_host=$(jq -r '.sshHost' <<<"$pre_tunnel")
+  pre_local_port=$(jq -r '.localPort' <<<"$pre_tunnel")
+  pre_socket=$(control_socket_for "$id")
+  was_active=false
+  is_tunnel_active "$pre_ssh_host" "$pre_socket" "$pre_local_port" && was_active=true
+
   local patch
   patch=$(jq -n \
     --arg name "$(jq -r '.name' <<<"$json")" \
@@ -696,6 +716,19 @@ do_update() {
 
   write_config '.tunnels |= map(if .id == $id then (. + $patch) else . end)' \
     --arg id "$id" --argjson patch "$patch"
+
+  if [[ "$was_active" == "true" ]]; then
+    # do_stop identifies the live connection purely via the control
+    # socket file (id-keyed, unaffected by the edit) — safe to call with
+    # the definition already patched. do_start is run in a subshell: on
+    # a failed reconnect (bad new host, say) it calls `exit`, which must
+    # only end that subshell, not this whole update — the edit itself
+    # already succeeded and is already durably saved; a failed restart
+    # just leaves the tunnel showing inactive, exactly like any other
+    # failed start, log file and all, for the user to retry or fix.
+    do_stop "$id" >/dev/null
+    ( do_start "$id" ) >/dev/null 2>&1 || true
+  fi
 
   tunnel_by_id "$id"
 }
