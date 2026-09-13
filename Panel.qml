@@ -309,14 +309,20 @@ Panel {
 
                         readonly property bool needsScroll: implicitWidth > nameClip.width
 
-                        NumberAnimation on x {
+                        SequentialAnimation {
                           running: nameText.needsScroll && textArea.hovered
                           loops: Animation.Infinite
-                          duration: Math.max(3000, nameText.implicitWidth * 25)
-                          from: 0
-                          to: -(nameText.implicitWidth - nameClip.width)
-                          easing.type: Easing.Linear
                           onRunningChanged: if (!running) nameText.x = 0
+
+                          NumberAnimation {
+                            target: nameText
+                            property: "x"
+                            from: 0
+                            to: -(nameText.implicitWidth - nameClip.width)
+                            duration: Math.max(3000, nameText.implicitWidth * 25)
+                            easing.type: Easing.Linear
+                          }
+                          PauseAnimation { duration: 900 }
                         }
                       }
                     }
@@ -341,14 +347,20 @@ Panel {
 
                         readonly property bool needsScroll: implicitWidth > subtitleClip.width
 
-                        NumberAnimation on x {
+                        SequentialAnimation {
                           running: subtitleText.needsScroll && textArea.hovered
                           loops: Animation.Infinite
-                          duration: Math.max(3000, subtitleText.implicitWidth * 25)
-                          from: 0
-                          to: -(subtitleText.implicitWidth - subtitleClip.width)
-                          easing.type: Easing.Linear
                           onRunningChanged: if (!running) subtitleText.x = 0
+
+                          NumberAnimation {
+                            target: subtitleText
+                            property: "x"
+                            from: 0
+                            to: -(subtitleText.implicitWidth - subtitleClip.width)
+                            duration: Math.max(3000, subtitleText.implicitWidth * 25)
+                            easing.type: Easing.Linear
+                          }
+                          PauseAnimation { duration: 900 }
                         }
                       }
                     }
