@@ -37,27 +37,47 @@ QtObject {
 
   // ---------------------------------------------------------- action lane
   // start / stop
+  //
+  // One independent process per tunnel id rather than a single shared
+  // lane: toggling tunnel A used to make tunnel B's switch refuse clicks
+  // too (start/stop is a network-bound ssh connect that can genuinely
+  // take up to ~30s), which felt broken with more than one tunnel around
+  // — only ever one of them clickable at a time. Calls for the SAME id
+  // still serialize (busy check keyed by id); different ids run fully
+  // concurrently.
 
-  property var _actionCallback: null
-  readonly property bool actionBusy: actionProcess.running
+  property var _actionProcesses: ({})   // id -> Process
 
-  function runAction(args, onDone) {
-    if (actionProcess.running) return false
-    root._actionCallback = onDone
-    actionProcess.command = [root.executable].concat(args)
-    actionProcess.running = true
+  function isActionBusy(id) {
+    return root._actionProcesses[id] !== undefined
+  }
+
+  function runAction(id, args, onDone) {
+    if (root._actionProcesses[id] !== undefined) return false
+    var proc = actionProcessComponent.createObject(root, {
+      command: [root.executable].concat(args)
+    })
+    proc._tunnelId = id
+    proc._onDone = onDone
+    root._actionProcesses[id] = proc
+    proc.running = true
     return true
   }
 
-  property Process actionProcess: Process {
-    running: false
-    command: []
-    stdout: StdioCollector { id: actionStdout; waitForEnd: true }
-    stderr: StdioCollector { id: actionStderr; waitForEnd: true }
-    onExited: function(exitCode) {
-      var cb = root._actionCallback
-      root._actionCallback = null
-      if (cb) cb(exitCode, actionStdout.text, actionStderr.text)
+  property Component actionProcessComponent: Component {
+    Process {
+      property string _tunnelId: ""
+      property var _onDone: null
+      stdout: StdioCollector { id: actionStdout; waitForEnd: true }
+      stderr: StdioCollector { id: actionStderr; waitForEnd: true }
+      onExited: function(exitCode) {
+        delete root._actionProcesses[_tunnelId]
+        var cb = _onDone
+        var out = actionStdout.text
+        var err = actionStderr.text
+        destroy()
+        if (cb) cb(exitCode, out, err)
+      }
     }
   }
 

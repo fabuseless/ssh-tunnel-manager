@@ -374,13 +374,14 @@ QtObject {
   function startTunnel(id) {
     if (root.isPending(id)) return
     root.setPendingToggle(id, true)
-    // The action lane is shared across every tunnel (only one start/stop
-    // runs at a time); runAction refuses to overlap and returns false
-    // rather than queuing. Without this check that silently drops the
-    // click entirely — the optimistic flag set above would just sit there
-    // until the sweep timeout, looking stuck, while nothing ever actually
-    // ran. Clear it immediately instead so another click can retry at once.
-    var started = root.controller.runAction(["start", id], function(exitCode, stdout, stderr) {
+    // Each tunnel id gets its own action process, but runAction still
+    // refuses to overlap a SECOND call for this same id (e.g. a double
+    // click) and returns false rather than queuing. Without this check
+    // that would silently drop the click entirely — the optimistic flag
+    // set above would just sit there until the sweep timeout, looking
+    // stuck, while nothing ever actually ran. Clear it immediately
+    // instead so another click can retry at once.
+    var started = root.controller.runAction(id, ["start", id], function(exitCode, stdout, stderr) {
       // Success: leave the pending flag for refreshStatus's own
       // reconcilePending to clear once it confirms active:true, rather
       // than clearing here and racing that same refreshStatus call below.
@@ -392,14 +393,14 @@ QtObject {
     })
     if (!started) {
       root.clearPendingToggle(id)
-      root.lastError = "Another tunnel action is still in progress — try again in a moment."
+      root.lastError = "This tunnel is already busy — try again in a moment."
     }
   }
 
   function stopTunnel(id) {
     if (root.isPending(id)) return
     root.setPendingToggle(id, false)
-    var started = root.controller.runAction(["stop", id], function(exitCode, stdout, stderr) {
+    var started = root.controller.runAction(id, ["stop", id], function(exitCode, stdout, stderr) {
       if (exitCode !== 0) {
         root.lastError = root.extractError(stdout, stderr, "Failed to stop tunnel.")
         root.clearPendingToggle(id)
@@ -408,7 +409,7 @@ QtObject {
     })
     if (!started) {
       root.clearPendingToggle(id)
-      root.lastError = "Another tunnel action is still in progress — try again in a moment."
+      root.lastError = "This tunnel is already busy — try again in a moment."
     }
   }
 
