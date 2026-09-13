@@ -39,6 +39,13 @@ Panel {
       JSON.stringify({ editId: tunnelId || "" }))
   }
 
+  function openPreferences() {
+    if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
+    close()
+    bar.shell.summon("bhh27.ssh-tunnel-manager",
+      JSON.stringify({ mode: "preferences" }))
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -136,13 +143,26 @@ Panel {
           }
 
           trailingControl: Component {
-            PanelActionButton {
-              iconText: "+"
-              tooltipText: "New tunnel"
-              foreground: Qt.darker(root.foreground, 1.4)
-              fontFamily: root.fontFamily
-              fontSize: Style.font.icon + 4
-              onClicked: root.openSettings("")
+            Row {
+              spacing: Style.spacing.sm
+
+              PanelActionButton {
+                iconText: "⚙"
+                tooltipText: "Preferences"
+                foreground: Qt.darker(root.foreground, 1.4)
+                fontFamily: root.fontFamily
+                fontSize: Style.font.icon + 4
+                onClicked: root.openPreferences()
+              }
+
+              PanelActionButton {
+                iconText: "+"
+                tooltipText: "New tunnel"
+                foreground: Qt.darker(root.foreground, 1.4)
+                fontFamily: root.fontFamily
+                fontSize: Style.font.icon + 4
+                onClicked: root.openSettings("")
+              }
             }
           }
         }

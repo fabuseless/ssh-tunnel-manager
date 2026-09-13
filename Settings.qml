@@ -22,6 +22,7 @@ Item {
   property var service: null
 
   property bool opened: false
+  property string mode: "tunnel"   // "tunnel" or "preferences"
   property string editId: ""   // "" means create mode
 
   property string nameDraft: ""
@@ -51,12 +52,18 @@ Item {
     root.deleteConfirmOpen = false
     try {
       var payload = payloadJson ? JSON.parse(payloadJson) : {}
+      root.mode = payload.mode === "preferences" ? "preferences" : "tunnel"
       root.editId = String(payload.editId || "")
     } catch (e) {
+      root.mode = "tunnel"
       root.editId = ""
     }
-    root.resetDrafts()
-    if (root.service) root.service.refreshSshHosts()
+    if (root.mode === "preferences") {
+      if (root.service) root.service.refreshPrefs()
+    } else {
+      root.resetDrafts()
+      if (root.service) root.service.refreshSshHosts()
+    }
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -179,7 +186,8 @@ Item {
       id: card
       anchors.centerIn: parent
       width: Math.min(Style.space(460), window.width - Style.gapsOut * 2)
-      height: Math.min(Style.space(560), window.height - Style.gapsOut * 2)
+      height: Math.min(root.mode === "preferences" ? Style.space(220) : Style.space(560),
+        window.height - Style.gapsOut * 2)
       radius: Style.cornerRadius
       color: root.background
       borderSpec: root.borderSpec
@@ -208,7 +216,7 @@ Item {
 
           Text {
             textFormat: Text.PlainText
-            text: root.editing ? "Edit tunnel" : "New tunnel"
+            text: root.mode === "preferences" ? "Preferences" : (root.editing ? "Edit tunnel" : "New tunnel")
             color: root.foreground
             font.family: root.family
             font.pixelSize: Style.font.title
@@ -216,7 +224,70 @@ Item {
 
           PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
 
+          Column {
+            id: prefsColumn
+            visible: root.mode === "preferences"
+            Layout.fillWidth: true
+            spacing: Style.spacing.md
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Column {
+                width: parent.width - autoAdoptToggle.width - Style.spacing.md
+                spacing: Style.spacing.xxs
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Auto-adopt foreign tunnels"
+                  color: root.foreground
+                  font.family: root.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  wrapMode: Text.WordWrap
+                  text: "Automatically add any ssh -L process running on this "
+                    + "system that wasn't started through this plugin as a "
+                    + "tracked tunnel. Turn off to only ever show tunnels you "
+                    + "created here."
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              ToggleSwitch {
+                id: autoAdoptToggle
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.service ? root.service.autoAdopt : true
+                foreground: root.foreground
+                accent: Color.accent
+                onToggled: {
+                  if (!root.service) return
+                  root.service.setAutoAdopt(!root.service.autoAdopt, function(ok, message) {
+                    if (!ok) root.formError = message
+                  })
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.formError !== ""
+              width: parent.width
+              text: root.formError
+              wrapMode: Text.WordWrap
+              color: Color.urgent
+              font.family: root.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
           ScrollView {
+            visible: root.mode === "tunnel"
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -463,6 +534,7 @@ Item {
             spacing: Style.spacing.xl
 
             Button {
+              visible: root.mode === "tunnel"
               bordered: true
               text: root.saving ? "Saving…" : (root.editing ? "Save" : "Create")
               opacity: root.saving ? 0.6 : 1.0
@@ -472,6 +544,7 @@ Item {
             }
 
             Button {
+              visible: root.mode === "tunnel"
               bordered: true
               text: "Cancel"
               foreground: root.foreground
@@ -480,12 +553,21 @@ Item {
             }
 
             Button {
-              visible: root.editing
+              visible: root.mode === "tunnel" && root.editing
               bordered: true
               text: "Delete"
               foreground: Color.urgent
               fontFamily: root.family
               onClicked: if (!root.saving) root.deleteConfirmOpen = true
+            }
+
+            Button {
+              visible: root.mode === "preferences"
+              bordered: true
+              text: "Close"
+              foreground: root.foreground
+              fontFamily: root.family
+              onClicked: root.dismiss()
             }
           }
         }

@@ -12,11 +12,16 @@
 #                               running on the system (one not spawned by
 #                               this plugin) as a normal tunnel definition —
 #                               from that point on it is indistinguishable
-#                               from one created through the form.
+#                               from one created through the form. Adoption
+#                               of never-before-seen processes is skipped
+#                               when the autoAdopt preference is off; the
+#                               resync of already-tracked entries is not.
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition
 #   remove <id>                stop if running, then delete the definition
+#   get-prefs                  JSON {autoAdopt}
+#   set-prefs <json>           validate + patch preferences, returns get-prefs
 #
 # Security invariants (see plugin README for the full rationale):
 #   - every ssh invocation is an argv array, never a shell string
@@ -96,6 +101,7 @@ validate_whole() {
     and (.tunnels | all(.[]; valid_tunnel))
     and ((.tunnels | map(.id) | unique | length) == (.tunnels | length))
     and ((.tunnels | map(.localPort) | unique | length) == (.tunnels | length))
+    and ((if .autoAdopt == null then true else .autoAdopt end) | type == "boolean")
   ' "$file" >/dev/null 2>&1
 }
 
@@ -289,6 +295,8 @@ is_tunnel_active() {
 # from this exact config, so there is nothing to drift.
 auto_adopt_new_ports() {
   local discovered="$1" count i
+  local adopt_enabled
+  adopt_enabled=$(jq -r 'if .autoAdopt == null then true else .autoAdopt end' "$config_file")
   count=$(jq 'length' <<<"$discovered")
   for ((i = 0; i < count; i++)); do
     local entry lp existing_tunnel
@@ -303,6 +311,13 @@ auto_adopt_new_ports() {
     remote_port=$(jq -r '.remotePort' <<<"$entry")
 
     if [[ -z "$existing_tunnel" ]]; then
+      # Adopting a never-before-seen foreign process is the one part of
+      # this function the user can turn off (see Preferences in the bar
+      # popup). The resync branch below always stays on regardless — it
+      # only keeps an ALREADY-tracked tunnel's details accurate, it never
+      # adds a new one, so there is nothing for that preference to gate.
+      [[ "$adopt_enabled" == "true" ]] || continue
+
       local name id config_now new_tunnel
       name="$ssh_host"
       config_now=$(cat "$config_file")
@@ -583,6 +598,22 @@ do_remove() {
   write_config '.tunnels |= map(select(.id != $id))' --arg id "$id"
 }
 
+# ---------------------------------------------------------------- preferences
+
+do_get_prefs() {
+  jq -c '{autoAdopt: (if .autoAdopt == null then true else .autoAdopt end)}' "$config_file"
+}
+
+do_set_prefs() {
+  local json="$1"
+  jq -e '.autoAdopt | type == "boolean"' <<<"$json" >/dev/null 2>&1 \
+    || fail "invalid prefs: autoAdopt must be a boolean"
+  local val
+  val=$(jq -r '.autoAdopt' <<<"$json")
+  write_config '. + {autoAdopt: $val}' --argjson val "$val"
+  do_get_prefs
+}
+
 # ---------------------------------------------------------------- ssh config
 
 do_list_ssh_hosts() {
@@ -618,5 +649,7 @@ case "$action" in
   add)            with_lock do_add "${1:?tunnel json required}" ;;
   update)         with_lock do_update "${1:?tunnel id required}" "${2:?tunnel json required}" ;;
   remove)         with_lock do_remove "${1:?tunnel id required}" ;;
+  get-prefs)      with_lock do_get_prefs ;;
+  set-prefs)      with_lock do_set_prefs "${1:?prefs json required}" ;;
   *) fail "unknown action: $action" ;;
 esac

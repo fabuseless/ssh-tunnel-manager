@@ -42,6 +42,10 @@ QtObject {
   property var sshHosts: []
   property string lastError: ""
 
+  // Whether tunnel-ctl adopts a never-before-seen foreign ssh -L process
+  // into `tunnels` automatically. See Settings.qml's Preferences screen.
+  property bool autoAdopt: true
+
   readonly property int activeCount: {
     root.pendingToggleRevision
     var n = 0
@@ -167,6 +171,30 @@ QtObject {
     })
   }
 
+  function refreshPrefs() {
+    root.controller.runCrud(["get-prefs"], function(exitCode, stdout, stderr) {
+      if (exitCode !== 0) return
+      try {
+        var parsed = JSON.parse(stdout)
+        if (parsed && typeof parsed.autoAdopt === "boolean") root.autoAdopt = parsed.autoAdopt
+      } catch (e) {
+        // Keep whatever we had.
+      }
+    })
+  }
+
+  function setAutoAdopt(value, onDone) {
+    root.controller.runCrud(["set-prefs", JSON.stringify({ autoAdopt: value })],
+      function(exitCode, stdout, stderr) {
+        if (exitCode === 0) {
+          root.autoAdopt = value
+          if (onDone) onDone(true, "")
+        } else if (onDone) {
+          onDone(false, root.extractError(stdout, stderr, "Could not save preference."))
+        }
+      })
+  }
+
   // ------------------------------------------------------------ actions
 
   function tunnelById(id) {
@@ -250,5 +278,6 @@ QtObject {
   Component.onCompleted: {
     root.refreshStatus()
     root.refreshSshHosts()
+    root.refreshPrefs()
   }
 }
