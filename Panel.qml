@@ -20,6 +20,9 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color dim: Qt.darker(foreground, 1.4)
 
+  // "" means no delete confirmation is open.
+  property string deleteConfirmId: ""
+
   // A literal glyph (fa-link), matching the "any Nerd Font character works"
   // convention used elsewhere in the shell.
   readonly property string icon: ""
@@ -38,6 +41,8 @@ Panel {
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
+
+  onOpenedChanged: if (!root.opened) root.deleteConfirmId = ""
 
   IpcHandler {
     target: "ssh-local-tunnels"
@@ -103,7 +108,10 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (root.deleteConfirmId !== "") root.deleteConfirmId = ""
+        else root.close()
+      }
 
       Column {
         id: column
@@ -257,9 +265,7 @@ Panel {
                   fontSize: Style.font.icon + 4
                   onClicked: {
                     if (!root.serviceReady) return
-                    root.svc.deleteTunnel(modelData.id, function(ok, message) {
-                      if (!ok) root.svc.lastError = message
-                    })
+                    root.deleteConfirmId = modelData.id
                   }
                 }
 
@@ -275,6 +281,33 @@ Panel {
               }
             }
           }
+        }
+      }
+
+      // Declared after column so it paints on top and blocks clicks to the
+      // row list underneath while open.
+      ConfirmDialog {
+        id: deleteConfirm
+        anchors.fill: parent
+        opened: root.deleteConfirmId !== ""
+        message: {
+          var tunnel = root.serviceReady ? root.svc.tunnelById(root.deleteConfirmId) : null
+          var name = tunnel ? tunnel.name : ""
+          return "Delete “" + name + "”? If it's currently enabled, it will be disabled before deletion."
+        }
+        confirmText: "Delete"
+        background: Color.popups.background
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        cornerRadius: Style.cornerRadius
+        onCanceled: root.deleteConfirmId = ""
+        onConfirmed: {
+          var id = root.deleteConfirmId
+          root.deleteConfirmId = ""
+          if (!root.serviceReady) return
+          root.svc.deleteTunnel(id, function(ok, message) {
+            if (!ok) root.svc.lastError = message
+          })
         }
       }
     }

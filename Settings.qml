@@ -495,7 +495,7 @@ Item {
         ConfirmDialog {
           anchors.fill: parent
           opened: root.deleteConfirmOpen
-          message: "Delete “" + root.nameDraft + "”? This stops it first if it's running."
+          message: "Delete “" + root.nameDraft + "”? If it's currently enabled, it will be disabled before deletion."
           confirmText: "Delete"
           background: root.background
           foreground: root.foreground
