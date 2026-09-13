@@ -285,13 +285,32 @@ parse_ssh_argv() {
 # through the plugin stops the whole process — every other forward on that
 # same session goes down with it. That's not a plugin limitation to work
 # around, it's just what one ssh -L -L session actually is.
+#
+# comm alone misses a renamed/symlinked ssh binary (comm reflects the name
+# it was invoked as, e.g. a "myssh -> /usr/bin/ssh" convenience symlink
+# would show comm=="myssh"). When comm doesn't match, /proc/<pid>/exe — a
+# symlink the kernel maintains to the actual file that was exec'd — is
+# checked as a fallback: it resolves straight through a symlink-style
+# rename to the real underlying binary, so it still matches. One readlink,
+# read-only, no subprocess spawned. What this does NOT catch: a literal
+# renamed COPY of the ssh binary (a distinct file/inode, not a symlink) —
+# telling that apart from a real OpenSSH build would need checksumming or
+# spawning `<candidate> -V` per process found, disproportionate for a
+# rare case; left as a known limitation rather than solved for here.
 discover_foreign_ssh_tunnels() {
   local out="[]" count=0
+  local real_ssh_path
+  real_ssh_path=$(readlink -f "$(command -v ssh)" 2>/dev/null) || real_ssh_path=""
   local pid_dir
   for pid_dir in /proc/[0-9]*; do
     local pid="${pid_dir#/proc/}"
     read_proc_stat "$pid" || continue
-    [[ "$proc_comm" == "ssh" ]] || continue
+    if [[ "$proc_comm" != "ssh" ]]; then
+      [[ -n "$real_ssh_path" ]] || continue
+      local exe_path
+      exe_path=$(readlink -f "$pid_dir/exe" 2>/dev/null) || continue
+      [[ "$exe_path" == "$real_ssh_path" ]] || continue
+    fi
     local -a argv=()
     mapfile -d '' -t argv < "$pid_dir/cmdline" 2>/dev/null || continue
     (( ${#argv[@]} > 0 )) || continue
