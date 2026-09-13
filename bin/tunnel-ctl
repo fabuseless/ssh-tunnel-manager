@@ -325,8 +325,14 @@ port_has_listener() {
   local port="$1"
   [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]] || return 1
   # Bounded connect probe in its own subshell: fd 3 closes automatically on
-  # exit, so there is nothing to clean up and nothing that can hang.
-  timeout 0.3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null
+  # exit, so there is nothing to clean up and nothing that can hang. IPv4
+  # loopback first (the common case, so the usual path pays no extra
+  # latency), falling back to IPv6 loopback — bash's own /dev/tcp accepts
+  # a bare "::1" directly, no brackets needed. A tunnel definition doesn't
+  # currently record which family its bind address actually is, so this
+  # just checks both rather than guessing.
+  timeout 0.3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null \
+    || timeout 0.3 bash -c "exec 3<>/dev/tcp/::1/$port" 2>/dev/null
 }
 
 is_tunnel_active() {
