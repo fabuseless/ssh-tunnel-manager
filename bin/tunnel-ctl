@@ -165,15 +165,29 @@ read_proc_stat() {   # sets proc_comm, proc_starttime; returns 1 if pid gone
 }
 
 # Parses an ssh -L spec: "port:host:hostport" or "bind:port:host:hostport".
+# Either host position can be a plain IPv4/hostname token or a bracketed
+# IPv6 literal (e.g. "[::1]") — brackets protect the address's own colons
+# from being mistaken for field separators. Regex-based rather than a
+# naive `IFS=':' split`, specifically so a bracketed literal's interior
+# colons don't inflate the field count and fall through to the reject case.
 _parse_dash_L() {   # sets _L_bind, _L_port, _L_rhost, _L_rport
   local spec="$1"; [[ -n "$spec" ]] || return 1
-  local -a p
-  IFS=':' read -r -a p <<< "$spec"
-  case "${#p[@]}" in
-    3) _L_bind="";        _L_port="${p[0]}"; _L_rhost="${p[1]}"; _L_rport="${p[2]}" ;;
-    4) _L_bind="${p[0]}"; _L_port="${p[1]}"; _L_rhost="${p[2]}"; _L_rport="${p[3]}" ;;
-    *) return 1 ;;   # IPv6 literals etc. — silently skipped, not mis-parsed
-  esac
+  local tok='(\[[^]]+\]|[^:]+)'
+  if [[ "$spec" =~ ^${tok}:([0-9]+):${tok}:([0-9]+)$ ]]; then
+    _L_bind="${BASH_REMATCH[1]}"
+    _L_port="${BASH_REMATCH[2]}"
+    _L_rhost="${BASH_REMATCH[3]}"
+    _L_rport="${BASH_REMATCH[4]}"
+  elif [[ "$spec" =~ ^([0-9]+):${tok}:([0-9]+)$ ]]; then
+    _L_bind=""
+    _L_port="${BASH_REMATCH[1]}"
+    _L_rhost="${BASH_REMATCH[2]}"
+    _L_rport="${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+  _L_bind="${_L_bind#[}"; _L_bind="${_L_bind%]}"
+  _L_rhost="${_L_rhost#[}"; _L_rhost="${_L_rhost%]}"
   [[ "$_L_port" =~ ^[0-9]+$ && "$_L_rport" =~ ^[0-9]+$ ]] || return 1
 }
 
@@ -414,11 +428,18 @@ do_start() {
   fi
   rm -f "$socket"
 
+  # ssh requires an IPv6 literal in a -L spec to be bracketed (bare "::1"
+  # in "port:::1:80" is ambiguous/wrong); a plain IPv4 address or hostname
+  # must NOT be bracketed. A colon in remote_host is the tell — neither
+  # IPv4 nor a valid hostname can contain one.
+  local remote_host_spec="$remote_host"
+  [[ "$remote_host" == *:* ]] && remote_host_spec="[$remote_host]"
+
   setsid ssh -N -M -S "$socket" \
     -o ExitOnForwardFailure=yes \
     -o ControlPersist=no \
     -o BatchMode=yes \
-    -L "${local_port}:${remote_host}:${remote_port}" \
+    -L "${local_port}:${remote_host_spec}:${remote_port}" \
     -- "$ssh_host" \
     >/dev/null 2>>"$runtime_dir/$id.log" &
   disown
