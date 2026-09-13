@@ -390,6 +390,15 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   checked: parent.tunnelActive
                   busy: parent.tunnelBusy
+                  // ToggleSwitch's own "busy" flag only swallows clicks —
+                  // it has no visual treatment of its own (shared across
+                  // every plugin, not this one's to change). A busy click
+                  // here can legitimately mean "still connecting" for up
+                  // to ~30s (a slow SSH agent), so without some visible
+                  // cue an ignored click just looks broken. Dim locally
+                  // instead of touching the shared component.
+                  opacity: busy ? 0.5 : 1.0
+                  Behavior on opacity { NumberAnimation { duration: 120 } }
                   foreground: root.foreground
                   accent: Color.accent
                   onToggled: if (root.serviceReady) root.svc.toggleTunnel(modelData.id)

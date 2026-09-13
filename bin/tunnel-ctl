@@ -567,7 +567,7 @@ do_start() {
   local remote_host_spec="$remote_host"
   [[ "$remote_host" == *:* ]] && remote_host_spec="[$remote_host]"
 
-  local spawn_pid
+  local spawn_pid spawn_starttime
   setsid ssh -N -M -S "$socket" \
     -o ExitOnForwardFailure=yes \
     -o ControlPersist=no \
@@ -577,6 +577,10 @@ do_start() {
     >/dev/null 2>>"$runtime_dir/$id.log" &
   spawn_pid=$!
   disown
+  # setsid execs straight into ssh rather than forking, so $! is already
+  # the real ssh pid — captured now (not just before a possible kill
+  # below) since read_proc_stat needs the process to still exist.
+  read_proc_stat "$spawn_pid" && spawn_starttime="$proc_starttime"
 
   # A fresh connection can legitimately stall well past what used to be a
   # 3-second cap here — observed directly: a flaky local SSH agent (logs
@@ -602,9 +606,15 @@ do_start() {
     # Whatever the reason (timed out while still alive, or exited on its
     # own), never leave this attempt's process running unaccounted for —
     # left alive, it could still finish connecting later with no tracked
-    # state anywhere reflecting it.
-    kill "$spawn_pid" 2>/dev/null || true
-    wait "$spawn_pid" 2>/dev/null || true
+    # state anywhere reflecting it. A plain `kill` + blocking `wait` was
+    # tried here first and is deliberately NOT what this does: if the
+    # process ever ignored SIGTERM (e.g. wedged on something in the SSH
+    # agent), a blocking `wait` would hang do_start itself forever, which
+    # would wedge the caller's entire action lane permanently — every
+    # future start/stop for every tunnel silently doing nothing until the
+    # shell was restarted. safe_kill_verified never blocks indefinitely:
+    # bounded TERM wait, escalate to KILL, bounded wait again, then give up.
+    [[ -n "$spawn_starttime" ]] && safe_kill_verified "$spawn_pid" "$spawn_starttime" "ssh" || true
     rm -f "$socket"
     printf '{"id":%s,"active":false,"error":"tunnel failed to start (see %s.log)"}\n' \
       "$(jq -R . <<<"$id")" "$id" >&2
