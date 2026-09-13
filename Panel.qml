@@ -189,11 +189,17 @@ Panel {
 
         ScrollView {
           id: listScroller
+          readonly property int maxHeight: Style.space(360)
           visible: root.serviceReady && root.svc.tunnels.length > 0
           width: parent.width
-          implicitHeight: Math.min(rowsColumn.implicitHeight, Style.space(360))
+          implicitHeight: Math.min(rowsColumn.implicitHeight, maxHeight)
           clip: true
-          ScrollBar.vertical.policy: ScrollBar.AsNeeded
+          // AlwaysOn (not just AsNeeded) once the list actually overflows,
+          // matching Settings.qml's host-suggestions scroller — otherwise
+          // a long list cuts off after the last visible row with no cue
+          // that more tunnels exist below.
+          ScrollBar.vertical.policy: rowsColumn.implicitHeight > maxHeight
+            ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
 
           Column {
             id: rowsColumn
