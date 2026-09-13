@@ -676,19 +676,80 @@ do_set_prefs() {
 
 # ---------------------------------------------------------------- ssh config
 
+# Extracts Host aliases from an OpenSSH client config file, following any
+# Include directives it contains — recursively, matching OpenSSH's own
+# resolution: a relative Include path is resolved against ~/.ssh, "~"
+# expands to $HOME, and each pattern is glob-expanded (courtesy of the
+# shell; nullglob is enabled by the caller so a non-matching pattern
+# contributes nothing rather than being treated as a literal filename).
+# _ssh_hosts_visited (realpaths already read) guards both genuine include
+# cycles and a diamond include (two files each including a third) being
+# walked twice, plus a hard cap as a backstop — a real config tree is a
+# handful of files, not dozens.
+#
+# Known limitation: does not understand a quoted Include argument with an
+# embedded space (e.g. Include "my file") — realistic, common Include
+# usage (a bare path or a glob) parses correctly; this isn't a full
+# ssh_config(5) tokenizer.
+_collect_ssh_hosts() {
+  local file="$1"
+  [[ -f "$file" && -r "$file" ]] || return 0
+
+  local real
+  real=$(readlink -f -- "$file" 2>/dev/null) || real="$file"
+  local seen
+  for seen in "${_ssh_hosts_visited[@]}"; do
+    [[ "$seen" == "$real" ]] && return 0
+  done
+  _ssh_hosts_visited+=("$real")
+  (( ${#_ssh_hosts_visited[@]} <= 64 )) || return 0
+
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    local -a tok
+    read -ra tok <<< "$line"
+    (( ${#tok[@]} >= 2 )) || continue
+    local key="${tok[0],,}"
+
+    if [[ "$key" == "host" ]]; then
+      local h
+      for h in "${tok[@]:1}"; do
+        [[ -n "$h" ]] && _ssh_hosts_out+=("$h")
+      done
+    elif [[ "$key" == "include" ]]; then
+      local pat g
+      for pat in "${tok[@]:1}"; do
+        [[ -n "$pat" ]] || continue
+        pat="${pat/#\~/$HOME}"
+        [[ "$pat" == /* ]] || pat="$HOME/.ssh/$pat"
+        for g in $pat; do
+          [[ -f "$g" ]] && _collect_ssh_hosts "$g"
+        done
+      done
+    fi
+  done < "$file"
+}
+
 do_list_ssh_hosts() {
   if [[ ! -f "$ssh_config" ]]; then
     printf '[]\n'
     return 0
   fi
-  awk '
-    { line = $0; sub(/(^|[^\\])#.*/, "", line) }
-    { n = split(line, tok, /[ \t]+/) }
-    { if (n >= 2 && tolower(tok[1]) == "host") {
-        for (i = 2; i <= n; i++) if (tok[i] != "") print tok[i]
-      }
-    }
-  ' "$ssh_config" \
+
+  local restore_nullglob=0
+  shopt -q nullglob || restore_nullglob=1
+  shopt -s nullglob
+
+  local -a _ssh_hosts_out=() _ssh_hosts_visited=()
+  _collect_ssh_hosts "$ssh_config"
+
+  (( restore_nullglob )) && shopt -u nullglob
+
+  local h
+  for h in "${_ssh_hosts_out[@]}"; do
+    printf '%s\n' "$h"
+  done \
     | grep -Ev '[*?]|^!' \
     | grep -E '^[A-Za-z0-9._-]+$' \
     | awk '!seen[$0]++' \
