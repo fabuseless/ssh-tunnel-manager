@@ -319,7 +319,14 @@ Panel {
                             property: "x"
                             from: 0
                             to: -(nameText.implicitWidth - nameClip.width)
-                            duration: Math.max(3000, nameText.implicitWidth * 25)
+                            // Duration scaled by the actual distance travelled
+                            // (the overflow), not the full text width — that
+                            // mismatch made two rows with different overflow-
+                            // to-length ratios visibly scroll at different
+                            // speeds even though both used the same "px per ms"
+                            // constant. This keeps every row's scroll speed
+                            // the same regardless of how long its full text is.
+                            duration: Math.max(1200, (nameText.implicitWidth - nameClip.width) * 25)
                             easing.type: Easing.Linear
                           }
                           PauseAnimation { duration: 900 }
@@ -357,7 +364,11 @@ Panel {
                             property: "x"
                             from: 0
                             to: -(subtitleText.implicitWidth - subtitleClip.width)
-                            duration: Math.max(3000, subtitleText.implicitWidth * 25)
+                            // Same fix as nameText above: scale by the overflow
+                            // distance, not the full text width, so the
+                            // warning-appended (longer) subtitle doesn't
+                            // visibly scroll faster than a plain one.
+                            duration: Math.max(1200, (subtitleText.implicitWidth - subtitleClip.width) * 25)
                             easing.type: Easing.Linear
                           }
                           PauseAnimation { duration: 900 }
