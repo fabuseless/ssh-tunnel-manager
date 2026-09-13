@@ -201,7 +201,14 @@ ssh_value_opt() {
 }
 
 # Best-effort parse of one ssh process's argv (array $argv, argv[0]="ssh").
-# Sets is_ours, local_port, remote_host, remote_port, bind_addr, dest.
+# Sets is_ours, dest, forwards — forwards is a FLAT array, four elements
+# per -L flag found (bind, port, host, hostport in that order; a process
+# can have more than one -L, e.g. "ssh -L 8080:h1:80 -L 9090:h2:90 host"
+# forwards two independent ports through the one session). Deliberately
+# not a delimited string to split later: bind is legitimately empty for a
+# 3-field -L spec, and bash's `read` collapses a leading tab/space
+# delimiter as if the field weren't there at all, silently shifting every
+# later field over by one — a flat array has no delimiter to collapse.
 #
 # ssh's own grammar is "ssh [options] destination [command [arg ...]]" —
 # destination is the FIRST positional, not the last. A single forward
@@ -214,7 +221,7 @@ ssh_value_opt() {
 # flag across every version — good enough for the plugin's own -N-only
 # invocations and realistic hand-typed ones.
 parse_ssh_argv() {
-  is_ours=false; local_port=""; remote_host=""; remote_port=""; bind_addr=""; dest=""
+  is_ours=false; dest=""; forwards=()
   local -a consumed=()
   local i n=${#argv[@]}
   for (( i=1; i<n; i++ )); do
@@ -235,8 +242,7 @@ parse_ssh_argv() {
         local spec="${tok#-L}"
         if [[ -z "$spec" ]]; then spec="${argv[i+1]:-}"; consumed[i+1]=1; fi
         if _parse_dash_L "$spec"; then
-          bind_addr=$_L_bind; local_port=$_L_port
-          remote_host=$_L_rhost; remote_port=$_L_rport
+          forwards+=("$_L_bind" "$_L_port" "$_L_rhost" "$_L_rport")
         fi
         ;;
       -*)
@@ -257,6 +263,16 @@ parse_ssh_argv() {
 # call here fails closed (`|| continue`) rather than a bare non-zero: under
 # `set -euo pipefail`, one unreadable/vanished /proc entry — routine, since
 # processes come and go constantly — must never abort the whole status poll.
+#
+# One process can forward more than one port (multiple -L flags on the
+# same ssh session) — this emits one array entry per forward, not one per
+# pid, all sharing that pid/startTicks/dest. Downstream (auto_adopt_new_ports,
+# do_stop's fallback) already key off localPort per entry, so this needs no
+# further plumbing there. One real consequence worth knowing: since these
+# forwards all live inside the same ssh process, stopping any ONE of them
+# through the plugin stops the whole process — every other forward on that
+# same session goes down with it. That's not a plugin limitation to work
+# around, it's just what one ssh -L -L session actually is.
 discover_foreign_ssh_tunnels() {
   local out="[]" count=0
   local pid_dir
@@ -270,16 +286,23 @@ discover_foreign_ssh_tunnels() {
 
     parse_ssh_argv
     $is_ours && continue
-    [[ -n "$local_port" && -n "$dest" ]] || continue
+    [[ -n "$dest" && ${#forwards[@]} -gt 0 ]] || continue
 
-    out=$(jq --argjson pid "$pid" --argjson start "$proc_starttime" \
-      --arg dest "$dest" --argjson lp "$local_port" \
-      --arg rh "${remote_host:-}" --argjson rp "${remote_port:-null}" \
-      --arg bind "${bind_addr:-}" \
-      '. + [{pid:$pid, startTicks:$start, sshHost:$dest, localPort:$lp,
-             remoteHost:$rh, remotePort:$rp, bindAddress:$bind}]' <<<"$out")
-    count=$((count + 1))
-    (( count >= 50 )) && break   # cheap sanity cap, not a hard requirement
+    local j bind lp rh rp
+    for (( j=0; j<${#forwards[@]}; j+=4 )); do
+      bind="${forwards[j]}"; lp="${forwards[j+1]}"
+      rh="${forwards[j+2]}"; rp="${forwards[j+3]}"
+      [[ -n "$lp" ]] || continue
+
+      out=$(jq --argjson pid "$pid" --argjson start "$proc_starttime" \
+        --arg dest "$dest" --argjson lp "$lp" \
+        --arg rh "${rh:-}" --argjson rp "${rp:-null}" \
+        --arg bind "${bind:-}" \
+        '. + [{pid:$pid, startTicks:$start, sshHost:$dest, localPort:$lp,
+               remoteHost:$rh, remotePort:$rp, bindAddress:$bind}]' <<<"$out")
+      count=$((count + 1))
+      (( count >= 50 )) && break 2   # cheap sanity cap (total forwards), not a hard requirement
+    done
   done
   printf '%s' "$out"
 }
