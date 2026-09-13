@@ -205,7 +205,7 @@ Panel {
             id: rowsColumn
             // A small gap so the toggle switch doesn't sit flush against
             // the scrollbar when it's showing.
-            width: listScroller.availableWidth - Style.spacing.sm
+            width: listScroller.availableWidth - Style.spacing.md
             spacing: Style.spacing.md
 
             Repeater {
