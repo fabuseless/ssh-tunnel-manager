@@ -7,12 +7,18 @@
 #   start <id>                 start a tunnel (ControlMaster spawn, idempotent)
 #   stop <id>                  tear a tunnel down (idempotent)
 #   status                     JSON {tunnels}: tunnel defs + live "active"
-#                               state + "forwardWarning" (a recent forward-
-#                               relay failure logged by an active tunnel's
-#                               own ssh process, e.g. the remote destination
-#                               refusing the connection — "" when there is
-#                               none; only ever set for a tunnel this plugin
-#                               itself started, see check_forward_warning).
+#                               state + "forwardWarning" (the remote
+#                               destination refusing/failing an active
+#                               tunnel's forwarded connection — "" when
+#                               there is none). Backed by a live bounded
+#                               probe against the tunnel's own local port on
+#                               every call (works for ANY active tunnel,
+#                               plugin-started or foreign, no expiry — see
+#                               probe_forward_health), falling back to
+#                               tailing a plugin-started tunnel's own log
+#                               for a recent passively-observed failure when
+#                               the probe itself is inconclusive (see
+#                               check_forward_warning).
 #                               Before computing status, silently auto-adopts
 #                               any foreign ssh -L process found running on
 #                               the system (one not spawned by this plugin)
@@ -368,6 +374,42 @@ port_has_listener() {
     || timeout 0.3 bash -c "exec 3<>/dev/tcp/::1/$port" 2>/dev/null
 }
 
+# Bounded connect + short read against an ACTIVE tunnel's own local port,
+# to tell whether the forwarded relay is actually working right now — not
+# just whether the ssh session itself is up, and not dependent on someone
+# else's real traffic having hit the failure recently. ssh closes the local
+# connection almost immediately when the remote channel open fails (the
+# same failure check_forward_warning's log-tail detects passively, for a
+# tunnel that has one), so "connection closed with nothing sent" vs. "got
+# a byte back" is a live, repeatable signal every poll can re-derive fresh
+# — no window, no expiry, no need for anything to have used it recently.
+# Reliable for a "server speaks first" protocol (VNC sends its version
+# banner unprompted the instant a client connects) — NOT reliable for a
+# "client speaks first" protocol (e.g. HTTP), where a healthy and a broken
+# tunnel both just sit there with nothing to read, indistinguishable by
+# this alone. That ambiguous case reports "" (inconclusive) rather than
+# guessing either way — the caller falls back to the passive log check.
+probe_forward_health() {   # $1=local_port; prints healthy|refused|"" (inconclusive)
+  local port="$1" out
+  [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]] || { printf ''; return 0; }
+  out=$(timeout 1.5 bash -c '
+    port="$1"
+    exec 3<>"/dev/tcp/127.0.0.1/$port" 2>/dev/null || exec 3<>"/dev/tcp/::1/$port" 2>/dev/null \
+      || { printf noconnect; exit 0; }
+    read -r -t 0.8 -N 1 -u 3 _byte
+    rc=$?
+    if (( rc == 0 )); then printf healthy
+    elif (( rc > 128 )); then printf inconclusive
+    else printf refused
+    fi
+  ' _ "$port" 2>/dev/null)
+  case "$out" in
+    healthy) printf 'healthy' ;;
+    refused) printf 'refused' ;;
+    *) printf '' ;;   # noconnect / inconclusive / timeout of the outer bound
+  esac
+}
+
 is_tunnel_active() {
   local ssh_host="$1" socket="$2" local_port="${3:-}"
   if [[ -S "$socket" ]] && ssh -S "$socket" -O check "$ssh_host" >/dev/null 2>&1; then
@@ -395,15 +437,30 @@ FORWARD_WARNING_WINDOW=30
 # tunnel's own runtime log, nowhere else) a line like:
 #   channel 3: open failed: connect failed: Connection refused
 # — and otherwise says and does nothing: the session stays up, "active"
-# stays true, forever, no matter how many attempts through it fail. This
-# is a best-effort check for a RECENT such failure, so a tunnel that
-# LOOKS fine can actually say so. Only meaningful for a tunnel this
-# plugin started (do_start owns that log file) — a socketless/adopted
-# tunnel has no log to check, so this silently finds nothing for those,
-# same as everywhere else in this script when the visibility just isn't
-# there.
-check_forward_warning() {   # $1=id; prints the failure detail, or nothing
-  local id="$1" log="$runtime_dir/$id.log"
+# stays true, forever, no matter how many attempts through it fail.
+#
+# probe_forward_health above gives a live, authoritative answer without
+# waiting for real traffic, so it's checked first: "healthy" means exactly
+# that (clearing any stale log-based flag outright, no expiry needed —
+# there's nothing to age out when every poll re-derives the truth fresh),
+# "refused" is reported immediately. Only the ambiguous "" case (a client-
+# speaks-first protocol the probe can't read, or the probe itself couldn't
+# even connect) falls through to the old passive log check below, which
+# still catches an exact, named failure for a tunnel this plugin itself
+# started (do_start owns that log file — a socketless/adopted tunnel has
+# none to check) as long as something has actually tried to use it
+# recently; a single old entry still ages out of THAT window rather than
+# flagging forever, same as before.
+check_forward_warning() {   # $1=id $2=local_port; prints the failure detail, or nothing
+  local id="$1" local_port="$2" log="$runtime_dir/$id.log"
+
+  local probe
+  probe=$(probe_forward_health "$local_port")
+  case "$probe" in
+    healthy) return 0 ;;
+    refused) printf 'Connection refused'; return 0 ;;
+  esac
+
   [[ -f "$log" ]] || return 0
 
   local mtime now
@@ -509,7 +566,7 @@ do_status() {
     socket=$(control_socket_for "$id")
     if is_tunnel_active "$ssh_host" "$socket" "$local_port"; then
       active=true
-      warning=$(check_forward_warning "$id")
+      warning=$(check_forward_warning "$id" "$local_port")
     else
       active=false
       warning=""
