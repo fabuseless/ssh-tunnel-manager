@@ -11,8 +11,8 @@ import "ConfigStore.js" as ConfigStore
 // Create/edit tunnel form.
 //
 // Summoned by the shell, not by IPC — Panel.qml already owns the
-// "ssh-local-tunnels" target and a target routes to one handler.
-//   omarchy-shell shell summon bhh27.ssh-local-tunnels '{"editId":"<id>"}'
+// "ssh-tunnel-manager" target and a target routes to one handler.
+//   omarchy-shell shell summon bhh27.ssh-tunnel-manager '{"editId":"<id>"}'
 Item {
   id: root
 
@@ -67,7 +67,7 @@ Item {
   function dismiss() {
     root.opened = false
     if (root.shell && typeof root.shell.hide === "function") {
-      root.shell.hide((root.manifest && root.manifest.id) || "bhh27.ssh-local-tunnels")
+      root.shell.hide((root.manifest && root.manifest.id) || "bhh27.ssh-tunnel-manager")
     }
   }
 
@@ -160,7 +160,7 @@ Item {
     visible: root.opened
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
-    WlrLayershell.namespace: "ssh-local-tunnels-settings"
+    WlrLayershell.namespace: "ssh-tunnel-manager-settings"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
     exclusionMode: ExclusionMode.Ignore

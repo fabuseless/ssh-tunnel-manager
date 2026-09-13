@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "bhh27.ssh-local-tunnels",
-  "name": "SSH Local Tunnels",
+  "id": "bhh27.ssh-tunnel-manager",
+  "name": "SSH Tunnel Manager",
   "version": "0.1.0",
   "author": "bhh27",
   "license": "MIT",
@@ -13,7 +13,7 @@
     "overlay": "Settings.qml"
   },
   "barWidget": {
-    "displayName": "SSH Local Tunnels",
+    "displayName": "SSH Tunnel Manager",
     "description": "Favorite tunnel toggle plus full tunnel list.",
     "category": "Network",
     "allowMultiple": false,

@@ -1,10 +1,10 @@
 import QtQuick
 import Quickshell
 
-// Owner of all SSH Local Tunnels state: tunnel definitions, live status, and
+// Owner of all SSH Tunnel Manager state: tunnel definitions, live status, and
 // action dispatch. A `service` is mounted once per session; the bar widget
 // and the settings overlay both reach it through
-// `bar.shell.serviceFor("bhh27.ssh-local-tunnels")`.
+// `bar.shell.serviceFor("bhh27.ssh-tunnel-manager")`.
 //
 // tunnel-ctl (bin/tunnel-ctl) is the sole owner of tunnels.json and of every
 // ssh process — this object only ever shells out to it and reflects the
@@ -13,7 +13,7 @@ QtObject {
   id: root
 
   readonly property string home: Quickshell.env("HOME")
-  readonly property string pluginDir: home + "/.config/omarchy/plugins/bhh27.ssh-local-tunnels"
+  readonly property string pluginDir: home + "/.config/omarchy/plugins/bhh27.ssh-tunnel-manager"
   readonly property string ctlPath: pluginDir + "/bin/tunnel-ctl"
 
   // Injected from the bar-widget's settings (manifest.json's barWidget.schema).

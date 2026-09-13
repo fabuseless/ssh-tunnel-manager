@@ -8,12 +8,12 @@ import qs.Commons
 // dispatch; this file only renders it and forwards clicks.
 Panel {
   id: root
-  moduleName: "bhh27.ssh-local-tunnels"
-  ipcTarget: "ssh-local-tunnels"
+  moduleName: "bhh27.ssh-tunnel-manager"
+  ipcTarget: "ssh-tunnel-manager"
   manageIpc: false
 
   readonly property var svc: bar && bar.shell
-    ? bar.shell.serviceFor("bhh27.ssh-local-tunnels") : null
+    ? bar.shell.serviceFor("bhh27.ssh-tunnel-manager") : null
   readonly property bool serviceReady: svc !== null
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -35,7 +35,7 @@ Panel {
   function openSettings(tunnelId) {
     if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
     close()
-    bar.shell.summon("bhh27.ssh-local-tunnels",
+    bar.shell.summon("bhh27.ssh-tunnel-manager",
       JSON.stringify({ editId: tunnelId || "" }))
   }
 
@@ -45,7 +45,7 @@ Panel {
   onOpenedChanged: if (!root.opened) root.deleteConfirmId = ""
 
   IpcHandler {
-    target: "ssh-local-tunnels"
+    target: "ssh-tunnel-manager"
 
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -81,7 +81,7 @@ Panel {
     foreground: root.barIconColor
     active: root.serviceReady && root.svc.lastError !== ""
     tooltipText: {
-      if (!root.serviceReady) return "SSH Local Tunnels — click to manage"
+      if (!root.serviceReady) return "SSH Tunnel Manager — click to manage"
       var count = root.svc.activeCount
       if (count === 0) return "No tunnels connected"
       return count + (count === 1 ? " tunnel connected" : " tunnels connected")
@@ -120,7 +120,7 @@ Panel {
 
         PanelHero {
           width: parent.width
-          title: "SSH Local Tunnels"
+          title: "SSH Tunnel Manager"
           meta: root.serviceReady
             ? (root.svc.activeCount + " active of " + root.svc.tunnels.length)
             : "Service unavailable"
@@ -169,7 +169,7 @@ Panel {
             textFormat: Text.PlainText
             width: parent.width
             text: !root.serviceReady
-              ? "The SSH Local Tunnels service did not start."
+              ? "The SSH Tunnel Manager service did not start."
               : "No tunnels yet. Add one to get started."
             wrapMode: Text.WordWrap
             color: root.dim
