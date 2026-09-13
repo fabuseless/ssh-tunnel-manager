@@ -20,7 +20,7 @@
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition
 #   remove <id>                stop if running, then delete the definition
-#   get-prefs                  JSON {autoAdopt}
+#   get-prefs                  JSON {autoAdopt, killAutosshFully}
 #   set-prefs <json>           validate + patch preferences, returns get-prefs
 #
 # Security invariants (see plugin README for the full rationale):
@@ -42,6 +42,11 @@
 #     still verified as the same process. Only the single pid is signaled,
 #     never a process group. The kernel's own UID-ownership check on
 #     kill(2) is an independent backstop underneath all of this.
+#     `resolve_kill_target` may redirect that one signaled pid from an
+#     autossh-supervised ssh child to its autossh parent (see there) when
+#     the killAutosshFully preference is on — still exactly one pid, still
+#     the same immediately-before-every-signal re-verification, just
+#     re-verified against "autossh" as the expected comm instead of "ssh".
 #   - the /proc scan and the port-listener probe used for discovery/display
 #     are read-only, same-uid, time-bounded, and cannot hang the status poll
 #   - tunnels.json writes are locked, atomically written, and re-validated
@@ -102,6 +107,7 @@ validate_whole() {
     and ((.tunnels | map(.id) | unique | length) == (.tunnels | length))
     and ((.tunnels | map(.localPort) | unique | length) == (.tunnels | length))
     and ((if .autoAdopt == null then true else .autoAdopt end) | type == "boolean")
+    and ((if .killAutosshFully == null then true else .killAutosshFully end) | type == "boolean")
   ' "$file" >/dev/null 2>&1
 }
 
@@ -151,7 +157,7 @@ control_socket_for() {
 # kernel guarantees the *last* ')' in the line is comm's true closing paren
 # — locate the field boundaries from there instead of by raw whitespace
 # splitting the whole line.
-read_proc_stat() {   # sets proc_comm, proc_starttime; returns 1 if pid gone
+read_proc_stat() {   # sets proc_comm, proc_ppid, proc_starttime; returns 1 if pid gone
   local pid="$1" line
   line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
   [[ -n "$line" ]] || return 1
@@ -159,7 +165,8 @@ read_proc_stat() {   # sets proc_comm, proc_starttime; returns 1 if pid gone
   proc_comm="${head#*(}"          # strip through first '(' -> comm, verbatim
   local rest="${line##*)}"       # everything after the last ')'
   local -a f
-  read -r -a f <<< "$rest"       # f[0]=state(field3) ... f[19]=starttime(field22)
+  read -r -a f <<< "$rest"       # f[0]=state(field3) f[1]=ppid(field4) ... f[19]=starttime(field22)
+  proc_ppid="${f[1]:-}"
   proc_starttime="${f[19]:-}"
   [[ "$proc_starttime" =~ ^[0-9]+$ ]] || return 1
 }
@@ -526,7 +533,11 @@ do_stop() {
     match=$(discover_foreign_ssh_tunnels | jq -e --argjson p "$local_port" \
       '.[] | select(.localPort == $p)') || match=""
     if [[ -n "$match" ]]; then
-      safe_kill_verified "$(jq -r '.pid' <<<"$match")" "$(jq -r '.startTicks' <<<"$match")" || true
+      resolve_kill_target "$(jq -r '.pid' <<<"$match")" "$(jq -r '.startTicks' <<<"$match")"
+      safe_kill_verified "$kill_pid" "$kill_starttime" "$kill_comm" || true
+      if [[ -n "$kill_pid2" ]]; then
+        safe_kill_verified "$kill_pid2" "$kill_starttime2" "$kill_comm2" || true
+      fi
     fi
   fi
   printf '{"id":%s,"active":false}\n' "$(jq -R . <<<"$id")"
@@ -538,10 +549,10 @@ do_stop() {
 # escalation decision — never acts on a stale snapshot. Only the single pid
 # is signaled (no process-group kill): ssh -N -L doesn't fork workers in
 # this plugin's scope, so a narrow blast radius is correct here.
-safe_kill_verified() {   # $1=pid $2=expected_starttime; returns 1 if still alive after escalation
-  local pid="$1" expected="$2"
+safe_kill_verified() {   # $1=pid $2=expected_starttime $3=expected_comm(default "ssh"); returns 1 if still alive after escalation
+  local pid="$1" expected="$2" expected_comm="${3:-ssh}"
   verify() {
-    read_proc_stat "$pid" && [[ "$proc_comm" == "ssh" && "$proc_starttime" == "$expected" ]]
+    read_proc_stat "$pid" && [[ "$proc_comm" == "$expected_comm" && "$proc_starttime" == "$expected" ]]
   }
   verify || return 0   # already gone / pid recycled: nothing to do, not an error
 
@@ -556,6 +567,44 @@ safe_kill_verified() {   # $1=pid $2=expected_starttime; returns 1 if still aliv
   fi
   verify && return 1
   return 0
+}
+
+# A ssh child supervised by autossh (a common wrapper that watches an ssh
+# connection and immediately respawns it on exit) can't be meaningfully
+# "stopped" by killing just the child — autossh's whole job is noticing
+# that and starting a fresh one, new pid, right back on the same port.
+# Confirmed empirically (not just assumed): the reverse isn't true either
+# — killing only the autossh parent leaves the ssh child running,
+# orphaned but alive, so the tunnel stays up. Genuinely stopping one
+# means both: the parent first (so it can never react to the child's
+# death by spawning a replacement — order matters, a child killed first
+# would race a still-alive autossh into doing exactly that), then the
+# child too.
+#
+# When the killAutosshFully preference is on and the given ssh pid's
+# parent is genuinely comm=="autossh", sets kill_pid/kill_starttime/
+# kill_comm to that PARENT (to signal first) and kill_pid2/kill_starttime2/
+# kill_comm2 to the original child (to signal after) — kill_pid2 is
+# empty when there's nothing more to do. Preference off, or no autossh
+# parent found, leaves kill_pid as the child alone and kill_pid2 empty:
+# the pre-existing behavior, a "temporary" stop autossh will undo itself.
+resolve_kill_target() {   # $1=child_pid $2=child_starttime
+  local child_pid="$1" child_start="$2"
+  kill_pid="$child_pid"; kill_starttime="$child_start"; kill_comm="ssh"
+  kill_pid2=""; kill_starttime2=""; kill_comm2=""
+
+  local kill_fully
+  kill_fully=$(jq -r 'if .killAutosshFully == null then true else .killAutosshFully end' "$config_file")
+  [[ "$kill_fully" == "true" ]] || return 0
+
+  read_proc_stat "$child_pid" || return 0
+  local ppid="$proc_ppid"
+  [[ -n "$ppid" && "$ppid" != "0" && "$ppid" != "1" ]] || return 0
+  read_proc_stat "$ppid" || return 0
+  [[ "$proc_comm" == "autossh" ]] || return 0
+
+  kill_pid2="$child_pid"; kill_starttime2="$child_start"; kill_comm2="ssh"
+  kill_pid="$ppid"; kill_starttime="$proc_starttime"; kill_comm="autossh"
 }
 
 # ---------------------------------------------------------------- crud
@@ -661,16 +710,27 @@ do_remove() {
 # ---------------------------------------------------------------- preferences
 
 do_get_prefs() {
-  jq -c '{autoAdopt: (if .autoAdopt == null then true else .autoAdopt end)}' "$config_file"
+  jq -c '{
+    autoAdopt: (if .autoAdopt == null then true else .autoAdopt end),
+    killAutosshFully: (if .killAutosshFully == null then true else .killAutosshFully end)
+  }' "$config_file"
 }
 
+# Partial update: only the preference keys actually present in the input
+# are validated and merged, so a caller can toggle one preference without
+# having to resend the other.
 do_set_prefs() {
   local json="$1"
-  jq -e '.autoAdopt | type == "boolean"' <<<"$json" >/dev/null 2>&1 \
-    || fail "invalid prefs: autoAdopt must be a boolean"
-  local val
-  val=$(jq -r '.autoAdopt' <<<"$json")
-  write_config '. + {autoAdopt: $val}' --argjson val "$val"
+  local patch='{}'
+  local key
+  for key in autoAdopt killAutosshFully; do
+    jq -e --arg k "$key" 'has($k)' <<<"$json" >/dev/null 2>&1 || continue
+    jq -e --arg k "$key" '.[$k] | type == "boolean"' <<<"$json" >/dev/null 2>&1 \
+      || fail "invalid prefs: $key must be a boolean"
+    patch=$(jq --arg k "$key" --argjson v "$(jq -c --arg k "$key" '.[$k]' <<<"$json")" \
+      '. + {($k): $v}' <<<"$patch")
+  done
+  write_config '. + $patch' --argjson patch "$patch"
   do_get_prefs
 }
 

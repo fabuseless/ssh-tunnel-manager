@@ -46,6 +46,12 @@ QtObject {
   // into `tunnels` automatically. See Settings.qml's Preferences screen.
   property bool autoAdopt: true
 
+  // Whether stopping a tunnel that's actually an autossh-supervised ssh
+  // child kills the autossh parent too (so it stays stopped) or just the
+  // child (autossh respawns it — a "temporary" stop). See Settings.qml's
+  // Preferences screen.
+  property bool killAutosshFully: true
+
   readonly property int activeCount: {
     root.pendingToggleRevision
     var n = 0
@@ -176,7 +182,9 @@ QtObject {
       if (exitCode !== 0) return
       try {
         var parsed = JSON.parse(stdout)
-        if (parsed && typeof parsed.autoAdopt === "boolean") root.autoAdopt = parsed.autoAdopt
+        if (!parsed) return
+        if (typeof parsed.autoAdopt === "boolean") root.autoAdopt = parsed.autoAdopt
+        if (typeof parsed.killAutosshFully === "boolean") root.killAutosshFully = parsed.killAutosshFully
       } catch (e) {
         // Keep whatever we had.
       }
@@ -188,6 +196,18 @@ QtObject {
       function(exitCode, stdout, stderr) {
         if (exitCode === 0) {
           root.autoAdopt = value
+          if (onDone) onDone(true, "")
+        } else if (onDone) {
+          onDone(false, root.extractError(stdout, stderr, "Could not save preference."))
+        }
+      })
+  }
+
+  function setKillAutosshFully(value, onDone) {
+    root.controller.runCrud(["set-prefs", JSON.stringify({ killAutosshFully: value })],
+      function(exitCode, stdout, stderr) {
+        if (exitCode === 0) {
+          root.killAutosshFully = value
           if (onDone) onDone(true, "")
         } else if (onDone) {
           onDone(false, root.extractError(stdout, stderr, "Could not save preference."))

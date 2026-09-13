@@ -186,7 +186,7 @@ Item {
       id: card
       anchors.centerIn: parent
       width: Math.min(Style.space(460), window.width - Style.gapsOut * 2)
-      height: Math.min(root.mode === "preferences" ? Style.space(220) : Style.space(560),
+      height: Math.min(root.mode === "preferences" ? Style.space(320) : Style.space(560),
         window.height - Style.gapsOut * 2)
       radius: Style.cornerRadius
       color: root.background
@@ -268,6 +268,50 @@ Item {
                 onToggled: {
                   if (!root.service) return
                   root.service.setAutoAdopt(!root.service.autoAdopt, function(ok, message) {
+                    if (!ok) root.formError = message
+                  })
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Column {
+                width: parent.width - killAutosshToggle.width - Style.spacing.md
+                spacing: Style.spacing.xxs
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Fully stop autossh tunnels"
+                  color: root.foreground
+                  font.family: root.family
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  wrapMode: Text.WordWrap
+                  text: "When stopping a tunnel that's actually supervised by "
+                    + "autossh, also stop autossh itself so it stays stopped. "
+                    + "Turn off to only stop the ssh session — autossh will "
+                    + "restart it, a temporary bounce rather than a real stop."
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              ToggleSwitch {
+                id: killAutosshToggle
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.service ? root.service.killAutosshFully : true
+                foreground: root.foreground
+                accent: Color.accent
+                onToggled: {
+                  if (!root.service) return
+                  root.service.setKillAutosshFully(!root.service.killAutosshFully, function(ok, message) {
                     if (!ok) root.formError = message
                   })
                 }
