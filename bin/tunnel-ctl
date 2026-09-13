@@ -202,16 +202,32 @@ ssh_value_opt() {
 
 # Best-effort parse of one ssh process's argv (array $argv, argv[0]="ssh").
 # Sets is_ours, local_port, remote_host, remote_port, bind_addr, dest.
-# Known limitation: assumes flags/destination come before any trailing
-# remote command, and isn't a full getopt reimplementation of every
-# OpenSSH flag across every version — good enough for the plugin's own
-# -N-only invocations and realistic hand-typed ones.
+#
+# ssh's own grammar is "ssh [options] destination [command [arg ...]]" —
+# destination is the FIRST positional, not the last. A single forward
+# pass stops the instant it finds that first positional and treats
+# everything after it as an opaque remote command: a trailing command's
+# own words (and any of ITS OWN flags, e.g. "ssh host ls -la") must never
+# be re-interpreted as more ssh options or mistaken for the destination.
+#
+# Known limitation: isn't a full getopt reimplementation of every OpenSSH
+# flag across every version — good enough for the plugin's own -N-only
+# invocations and realistic hand-typed ones.
 parse_ssh_argv() {
   is_ours=false; local_port=""; remote_host=""; remote_port=""; bind_addr=""; dest=""
   local -a consumed=()
   local i n=${#argv[@]}
   for (( i=1; i<n; i++ )); do
+    [[ -n "${consumed[i]:-}" ]] && continue
     local tok="${argv[i]}"
+
+    if [[ "$tok" == "--" ]]; then
+      # Explicit end-of-options: the very next token, whatever it looks
+      # like, is the destination — never another ssh option.
+      dest="${argv[i+1]:-}"
+      break
+    fi
+
     case "$tok" in
       "$runtime_dir"/*) is_ours=true ;;
       -S"$runtime_dir"/*) is_ours=true ;;
@@ -227,13 +243,13 @@ parse_ssh_argv() {
         local opt="${tok:0:2}"
         if [[ "$tok" == "$opt" ]] && ssh_value_opt "$opt"; then consumed[i+1]=1; fi
         ;;
+      *)
+        # First non-flag token: the destination. Stop — anything past
+        # this point belongs to a trailing remote command, not to ssh.
+        dest="$tok"
+        break
+        ;;
     esac
-  done
-  for (( i=n-1; i>=1; i-- )); do
-    [[ "${argv[i]}" == "--" ]] && continue
-    [[ -n "${consumed[i]:-}" ]] && continue
-    [[ "${argv[i]}" == -* ]] && continue
-    dest="${argv[i]}"; break
   done
 }
 
