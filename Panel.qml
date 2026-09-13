@@ -212,7 +212,7 @@ Panel {
                 Column {
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - toggleSwitch.width
-                    - editBtn.width - (Style.spacing.md * 2)
+                    - editBtn.width - deleteBtn.width - (Style.spacing.md * 3)
 
                   Text {
                     textFormat: Text.PlainText
@@ -244,6 +244,23 @@ Panel {
                   fontFamily: root.fontFamily
                   fontSize: Style.font.icon + 4
                   onClicked: root.openSettings(modelData.id)
+                }
+
+                PanelActionButton {
+                  id: deleteBtn
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: ""   // fa-trash
+                  tooltipText: "Delete"
+                  foreground: Qt.darker(root.foreground, 1.4)
+                  hoverColor: Color.urgent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.icon + 4
+                  onClicked: {
+                    if (!root.serviceReady) return
+                    root.svc.deleteTunnel(modelData.id, function(ok, message) {
+                      if (!ok) root.svc.lastError = message
+                    })
+                  }
                 }
 
                 ToggleSwitch {
