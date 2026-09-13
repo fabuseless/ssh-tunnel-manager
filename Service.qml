@@ -72,7 +72,12 @@ QtObject {
   property var pendingToggles: ({})
   // pendingToggles is mutated in place; bindings need this scalar to notice.
   property int pendingToggleRevision: 0
-  readonly property int pendingToggleTimeout: 8000
+  // Comfortably above do_start's own worst-case wait (a slow SSH agent
+  // can legitimately take 20+ seconds to recover before a connection
+  // completes) so a real, still-in-flight start/stop/autoStart call is
+  // never reverted by this fallback sweep before the backend's own
+  // answer has a chance to arrive.
+  readonly property int pendingToggleTimeout: 33000
 
   function isPending(id) {
     return root.pendingToggles[id] !== undefined

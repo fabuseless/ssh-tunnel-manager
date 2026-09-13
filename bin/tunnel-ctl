@@ -567,6 +567,7 @@ do_start() {
   local remote_host_spec="$remote_host"
   [[ "$remote_host" == *:* ]] && remote_host_spec="[$remote_host]"
 
+  local spawn_pid
   setsid ssh -N -M -S "$socket" \
     -o ExitOnForwardFailure=yes \
     -o ControlPersist=no \
@@ -574,10 +575,23 @@ do_start() {
     -L "${local_port}:${remote_host_spec}:${remote_port}" \
     -- "$ssh_host" \
     >/dev/null 2>>"$runtime_dir/$id.log" &
+  spawn_pid=$!
   disown
 
+  # A fresh connection can legitimately stall well past what used to be a
+  # 3-second cap here — observed directly: a flaky local SSH agent (logs
+  # "ssh_agent_bind_hostkey: agent refused operation") can take 20+ seconds
+  # to recover before authentication actually completes, even though the
+  # connection succeeds fine once it does. The short cap was treating that
+  # as a hard failure while the real ssh process kept running in the
+  # background and quietly finished connecting seconds later — invisible
+  # to tunnels.json until the next poll, and free to collide with a
+  # subsequent start attempt on the same socket path/local port. Wait much
+  # longer for a real outcome, but stop immediately once the process itself
+  # exits on its own (a genuine fast failure — bad host, local port
+  # already taken — shouldn't wait around at all).
   local waited=0
-  while [[ ! -S "$socket" && $waited -lt 150 ]]; do
+  while [[ ! -S "$socket" && $waited -lt 1500 ]] && kill -0 "$spawn_pid" 2>/dev/null; do
     sleep 0.02
     waited=$((waited + 1))
   done
@@ -585,6 +599,13 @@ do_start() {
   if [[ -S "$socket" ]] && is_tunnel_active "$ssh_host" "$socket"; then
     printf '{"id":%s,"active":true}\n' "$(jq -R . <<<"$id")"
   else
+    # Whatever the reason (timed out while still alive, or exited on its
+    # own), never leave this attempt's process running unaccounted for —
+    # left alive, it could still finish connecting later with no tracked
+    # state anywhere reflecting it.
+    kill "$spawn_pid" 2>/dev/null || true
+    wait "$spawn_pid" 2>/dev/null || true
+    rm -f "$socket"
     printf '{"id":%s,"active":false,"error":"tunnel failed to start (see %s.log)"}\n' \
       "$(jq -R . <<<"$id")" "$id" >&2
     exit 4
