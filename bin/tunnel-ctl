@@ -19,12 +19,19 @@
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition.
-#                               if it was running, stops and restarts it
-#                               with the new settings (best-effort — a
-#                               failed restart still leaves the edit saved,
-#                               just shows inactive, same as any other
-#                               failed start)
+#                               if it was running AND a connection-relevant
+#                               field actually changed (sshHost/localPort/
+#                               remoteHost/remotePort — not name/autoStart),
+#                               stops and restarts it with the new settings
+#                               (best-effort — a failed restart still leaves
+#                               the edit saved, just shows inactive, same as
+#                               any other failed start)
 #   remove <id>                stop if running, then delete the definition
+#   resume-auto-start          start every tunnel with autoStart:true that
+#                               isn't already active, then JSON {tunnels}
+#                               (do_status's own shape). Meant to run once,
+#                               at shell/service startup — never from the
+#                               regular poll, which would fight a manual stop
 #   get-prefs                  JSON {autoAdopt, killAutosshFully}
 #   set-prefs <json>           validate + patch preferences, returns get-prefs
 #
@@ -105,7 +112,8 @@ validate_whole() {
       and (.sshHost | valid_str_field)
       and (.localPort | valid_port)
       and (.remoteHost | valid_str_field)
-      and (.remotePort | valid_port);
+      and (.remotePort | valid_port)
+      and ((if .autoStart == null then false else .autoStart end) | type == "boolean");
     (.schemaVersion == 1)
     and (.tunnels | type == "array")
     and (.tunnels | all(.[]; valid_tunnel))
@@ -666,6 +674,7 @@ validate_input_fields() {
     and ((.remoteHost // "127.0.0.1") | type == "string" and length > 0 and length <= 255
          and (test("[ \t\r\n]") | not))
     and (.remotePort | type == "number" and (floor == .) and . >= 1 and . <= 65535)
+    and ((if .autoStart == null then false else .autoStart end) | type == "boolean")
   ' <<<"$json" >/dev/null 2>&1
 }
 
@@ -673,13 +682,14 @@ do_add() {
   local json="$1"
   validate_input_fields "$json" || fail "invalid tunnel definition"
 
-  local existing name ssh_host local_port remote_host remote_port id
+  local existing name ssh_host local_port remote_host remote_port auto_start id
   existing=$(cat "$config_file")
   name=$(jq -r '.name' <<<"$json")
   ssh_host=$(jq -r '.sshHost' <<<"$json")
   local_port=$(jq -r '.localPort' <<<"$json")
   remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")
   remote_port=$(jq -r '.remotePort' <<<"$json")
+  auto_start=$(jq -r 'if .autoStart == null then false else .autoStart end' <<<"$json")
 
   if jq -e --argjson p "$local_port" '.tunnels[] | select(.localPort == $p)' <<<"$existing" >/dev/null 2>&1; then
     fail "local port $local_port is already used by another tunnel"
@@ -691,9 +701,9 @@ do_add() {
   new_tunnel=$(jq -n \
     --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
     --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
-    --argjson remotePort "$remote_port" \
+    --argjson remotePort "$remote_port" --argjson autoStart "$auto_start" \
     '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort}')
+      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart}')
 
   write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
 
@@ -721,28 +731,47 @@ do_update() {
   # two: the UI would show the new settings as saved and "active", while
   # traffic kept flowing to wherever the OLD process was actually
   # pointed, with no indication anything was off.
-  local pre_tunnel pre_ssh_host pre_local_port pre_socket was_active
+  local pre_tunnel pre_ssh_host pre_local_port pre_remote_host pre_remote_port pre_socket was_active
   pre_tunnel=$(tunnel_by_id "$id")
   pre_ssh_host=$(jq -r '.sshHost' <<<"$pre_tunnel")
   pre_local_port=$(jq -r '.localPort' <<<"$pre_tunnel")
+  pre_remote_host=$(jq -r '.remoteHost' <<<"$pre_tunnel")
+  pre_remote_port=$(jq -r '.remotePort' <<<"$pre_tunnel")
   pre_socket=$(control_socket_for "$id")
   was_active=false
   is_tunnel_active "$pre_ssh_host" "$pre_socket" "$pre_local_port" && was_active=true
 
+  local new_ssh_host new_remote_host new_remote_port auto_start
+  new_ssh_host=$(jq -r '.sshHost' <<<"$json")
+  new_remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")
+  new_remote_port=$(jq -r '.remotePort' <<<"$json")
+  auto_start=$(jq -r 'if .autoStart == null then false else .autoStart end' <<<"$json")
+
+  # Only a connection-relevant field actually changing warrants a restart
+  # — renaming a tunnel, or flipping its autoStart flag, doesn't touch
+  # where it connects to or forwards from, so there is nothing for a
+  # running process to need re-pointing at.
+  local connection_changed=false
+  if [[ "$pre_ssh_host" != "$new_ssh_host" || "$pre_local_port" != "$local_port" \
+        || "$pre_remote_host" != "$new_remote_host" || "$pre_remote_port" != "$new_remote_port" ]]; then
+    connection_changed=true
+  fi
+
   local patch
   patch=$(jq -n \
     --arg name "$(jq -r '.name' <<<"$json")" \
-    --arg sshHost "$(jq -r '.sshHost' <<<"$json")" \
+    --arg sshHost "$new_ssh_host" \
     --argjson localPort "$local_port" \
-    --arg remoteHost "$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")" \
-    --argjson remotePort "$(jq -r '.remotePort' <<<"$json")" \
+    --arg remoteHost "$new_remote_host" \
+    --argjson remotePort "$new_remote_port" \
+    --argjson autoStart "$auto_start" \
     '{name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort}')
+      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart}')
 
   write_config '.tunnels |= map(if .id == $id then (. + $patch) else . end)' \
     --arg id "$id" --argjson patch "$patch"
 
-  if [[ "$was_active" == "true" ]]; then
+  if [[ "$was_active" == "true" && "$connection_changed" == "true" ]]; then
     # do_stop identifies the live connection purely via the control
     # socket file (id-keyed, unaffected by the edit) — safe to call with
     # the definition already patched. do_start is run in a subshell: on
@@ -763,6 +792,36 @@ do_remove() {
   tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
   do_stop "$id" >/dev/null || true
   write_config '.tunnels |= map(select(.id != $id))' --arg id "$id"
+}
+
+# Starts every tunnel flagged autoStart:true that isn't already active,
+# then returns the same {tunnels} shape do_status does. Meant to run
+# exactly once, at shell/service startup (Service.qml's Component.
+# onCompleted) — never from the regular poll timer, which would fight a
+# tunnel the user deliberately stopped by hand moments earlier.
+do_resume_auto_start() {
+  local tunnels count i
+  tunnels=$(cat "$config_file")
+  count=$(jq '.tunnels | length' <<<"$tunnels")
+  for (( i = 0; i < count; i++ )); do
+    local t id auto_start ssh_host local_port socket
+    t=$(jq -c ".tunnels[$i]" <<<"$tunnels")
+    auto_start=$(jq -r 'if .autoStart == null then false else .autoStart end' <<<"$t")
+    [[ "$auto_start" == "true" ]] || continue
+
+    id=$(jq -r '.id' <<<"$t")
+    ssh_host=$(jq -r '.sshHost' <<<"$t")
+    local_port=$(jq -r '.localPort' <<<"$t")
+    socket=$(control_socket_for "$id")
+    is_tunnel_active "$ssh_host" "$socket" "$local_port" && continue
+
+    # Subshell for the same reason do_update's restart attempt uses one:
+    # a failed start calls `exit`, which must only end that subshell, not
+    # this whole resume pass — one tunnel failing to reconnect shouldn't
+    # stop the rest from being tried.
+    ( do_start "$id" ) >/dev/null 2>&1 || true
+  done
+  do_status
 }
 
 # ---------------------------------------------------------------- preferences
@@ -888,6 +947,7 @@ case "$action" in
   add)            with_lock do_add "${1:?tunnel json required}" ;;
   update)         with_lock do_update "${1:?tunnel id required}" "${2:?tunnel json required}" ;;
   remove)         with_lock do_remove "${1:?tunnel id required}" ;;
+  resume-auto-start) with_lock do_resume_auto_start ;;
   get-prefs)      with_lock do_get_prefs ;;
   set-prefs)      with_lock do_set_prefs "${1:?prefs json required}" ;;
   *) fail "unknown action: $action" ;;

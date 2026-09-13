@@ -165,6 +165,29 @@ QtObject {
     if (started) pollWatchdog.restart()
   }
 
+  // Starts every tunnel flagged autoStart on the service's own CRUD lane
+  // (idle at this point in startup) instead of the regular status poll —
+  // meant to run exactly once, right after the service comes up, never on
+  // every poll, which would fight a tunnel the user just stopped by hand.
+  function resumeAutoStart() {
+    root.controller.runCrud(["resume-auto-start"], function(exitCode, stdout, stderr) {
+      if (exitCode !== 0) {
+        root.lastError = root.extractError(stdout, stderr, "Status check failed.")
+        return
+      }
+      try {
+        var parsed = JSON.parse(stdout)
+        if (parsed && Array.isArray(parsed.tunnels)) {
+          root.tunnels = parsed.tunnels
+          root.lastError = ""
+        }
+      } catch (e) {
+        // Fall back to a normal status poll rather than starting up blank.
+        root.refreshStatus()
+      }
+    })
+  }
+
   function refreshSshHosts() {
     root.controller.runCrud(["list-ssh-hosts"], function(exitCode, stdout, stderr) {
       if (exitCode !== 0) return
@@ -296,7 +319,7 @@ QtObject {
   }
 
   Component.onCompleted: {
-    root.refreshStatus()
+    root.resumeAutoStart()
     root.refreshSshHosts()
     root.refreshPrefs()
   }

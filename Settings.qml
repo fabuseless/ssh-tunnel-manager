@@ -30,6 +30,7 @@ Item {
   property string localPortDraft: ""
   property string remoteHostDraft: ""
   property string remotePortDraft: ""
+  property bool autoStartDraft: false
 
   property var fieldErrors: ({})
   property string formError: ""
@@ -87,6 +88,7 @@ Item {
         root.localPortDraft = String(tunnel.localPort)
         root.remoteHostDraft = tunnel.remoteHost
         root.remotePortDraft = String(tunnel.remotePort)
+        root.autoStartDraft = !!tunnel.autoStart
         return
       }
     }
@@ -95,6 +97,7 @@ Item {
     root.localPortDraft = ""
     root.remoteHostDraft = ""
     root.remotePortDraft = ""
+    root.autoStartDraft = false
   }
 
   function currentDraft() {
@@ -103,7 +106,8 @@ Item {
       sshHost: root.sshHostDraft,
       localPort: Number(root.localPortDraft),
       remoteHost: root.remoteHostDraft,
-      remotePort: Number(root.remotePortDraft)
+      remotePort: Number(root.remotePortDraft),
+      autoStart: root.autoStartDraft
     }
   }
 
@@ -557,6 +561,43 @@ Item {
                   color: Color.urgent
                   font.family: root.family
                   font.pixelSize: Style.font.caption
+                }
+              }
+
+              Row {
+                width: fieldsColumn.width
+                spacing: Style.spacing.md
+
+                Column {
+                  width: parent.width - autoStartToggle.width - Style.spacing.md
+                  spacing: Style.spacing.xxs
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "Auto-restart on reboot"
+                    color: Color.muted
+                    font.family: root.family
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "Start this tunnel automatically the next time the "
+                      + "shell starts up (after a reboot or a shell restart)."
+                    color: Color.muted
+                    font.family: root.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                ToggleSwitch {
+                  id: autoStartToggle
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: root.autoStartDraft
+                  foreground: root.foreground
+                  accent: Color.accent
+                  onToggled: root.autoStartDraft = !root.autoStartDraft
                 }
               }
 

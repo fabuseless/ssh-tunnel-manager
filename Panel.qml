@@ -248,8 +248,8 @@ Panel {
                 Item {
                   id: textArea
                   anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - toggleSwitch.width
-                    - editBtn.width - deleteBtn.width - (Style.spacing.md * 3)
+                  width: parent.width - toggleSwitch.width - editBtn.width
+                    - deleteBtn.width - autoStartBtn.width - (Style.spacing.md * 4)
                   height: textColumn.implicitHeight
 
                   // At rest, both lines elide as before. While this row's
@@ -363,6 +363,31 @@ Panel {
                   onClicked: {
                     if (!root.serviceReady) return
                     root.deleteConfirmId = modelData.id
+                  }
+                }
+
+                PanelActionButton {
+                  id: autoStartBtn
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: ""   // fa-anchor
+                  tooltipText: modelData.autoStart
+                    ? "Auto-restart on reboot: on" : "Auto-restart on reboot: off"
+                  foreground: modelData.autoStart ? Color.accent : Qt.darker(root.foreground, 1.4)
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.icon + 4
+                  onClicked: {
+                    if (!root.serviceReady) return
+                    var payload = {
+                      name: modelData.name,
+                      sshHost: modelData.sshHost,
+                      localPort: modelData.localPort,
+                      remoteHost: modelData.remoteHost,
+                      remotePort: modelData.remotePort,
+                      autoStart: !modelData.autoStart
+                    }
+                    root.svc.updateTunnel(modelData.id, payload, function(ok, message) {
+                      if (!ok) root.svc.lastError = message
+                    })
                   }
                 }
 
