@@ -318,7 +318,8 @@ Panel {
                         textFormat: Text.PlainText
                         text: modelData.sshHost + ":" + modelData.localPort
                           + " → " + modelData.remoteHost + ":" + modelData.remotePort
-                        color: root.dim
+                          + (modelData.forwardWarning ? "  (" + modelData.forwardWarning + ")" : "")
+                        color: modelData.forwardWarning ? Color.urgent : root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         elide: textArea.hovered ? Text.ElideNone : Text.ElideRight

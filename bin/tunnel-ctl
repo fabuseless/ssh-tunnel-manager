@@ -7,15 +7,21 @@
 #   start <id>                 start a tunnel (ControlMaster spawn, idempotent)
 #   stop <id>                  tear a tunnel down (idempotent)
 #   status                     JSON {tunnels}: tunnel defs + live "active"
-#                               state. Before computing status, silently
-#                               auto-adopts any foreign ssh -L process found
-#                               running on the system (one not spawned by
-#                               this plugin) as a normal tunnel definition —
-#                               from that point on it is indistinguishable
-#                               from one created through the form. Adoption
-#                               of never-before-seen processes is skipped
-#                               when the autoAdopt preference is off; the
-#                               resync of already-tracked entries is not.
+#                               state + "forwardWarning" (a recent forward-
+#                               relay failure logged by an active tunnel's
+#                               own ssh process, e.g. the remote destination
+#                               refusing the connection — "" when there is
+#                               none; only ever set for a tunnel this plugin
+#                               itself started, see check_forward_warning).
+#                               Before computing status, silently auto-adopts
+#                               any foreign ssh -L process found running on
+#                               the system (one not spawned by this plugin)
+#                               as a normal tunnel definition — from that
+#                               point on it is indistinguishable from one
+#                               created through the form. Adoption of
+#                               never-before-seen processes is skipped when
+#                               the autoAdopt preference is off; the resync
+#                               of already-tracked entries is not.
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition.
@@ -375,6 +381,44 @@ is_tunnel_active() {
   [[ -n "$local_port" ]] && port_has_listener "$local_port"
 }
 
+# How recently a tunnel's own ssh process must have logged a forward
+# relay failure for do_status to still flag it. A single old failure
+# that hasn't recurred ages out rather than flagging the tunnel forever;
+# a genuinely ongoing problem keeps re-touching the log's mtime and stays
+# flagged continuously across polls.
+FORWARD_WARNING_WINDOW=30
+
+# "active" only ever means the ssh session itself is alive — ExitOnForward
+# Failure guards the LOCAL bind at startup, not whether the REMOTE
+# destination is actually reachable, which ssh only discovers once
+# something tries to use the tunnel. When that happens it logs (to the
+# tunnel's own runtime log, nowhere else) a line like:
+#   channel 3: open failed: connect failed: Connection refused
+# — and otherwise says and does nothing: the session stays up, "active"
+# stays true, forever, no matter how many attempts through it fail. This
+# is a best-effort check for a RECENT such failure, so a tunnel that
+# LOOKS fine can actually say so. Only meaningful for a tunnel this
+# plugin started (do_start owns that log file) — a socketless/adopted
+# tunnel has no log to check, so this silently finds nothing for those,
+# same as everywhere else in this script when the visibility just isn't
+# there.
+check_forward_warning() {   # $1=id; prints the failure detail, or nothing
+  local id="$1" log="$runtime_dir/$id.log"
+  [[ -f "$log" ]] || return 0
+
+  local mtime now
+  mtime=$(stat -c %Y "$log" 2>/dev/null) || return 0
+  now=$(date +%s)
+  (( now - mtime <= FORWARD_WARNING_WINDOW )) || return 0
+
+  local line reason
+  line=$(grep -a 'open failed: connect failed:' "$log" 2>/dev/null | tail -1) || return 0
+  [[ -n "$line" ]] || return 0
+  reason="${line#*open failed: connect failed: }"
+  reason="${reason%$'\r'}"   # ssh's own stderr line-endings include a trailing CR
+  printf '%s' "$reason"
+}
+
 # For every foreign ssh -L process not already tracked by an existing
 # definition (by local port), silently persists it as a normal tunnel via
 # the same write_config/validate_whole path do_add uses — no special-cased
@@ -456,27 +500,31 @@ do_status() {
   discovered=$(discover_foreign_ssh_tunnels)
   auto_adopt_new_ports "$discovered"
 
-  local tunnels active_map="{}"
+  local tunnels active_map="{}" warning_map="{}"
   tunnels=$(cat "$config_file")   # fresh read — may have just grown
 
   while IFS=$'\t' read -r id ssh_host local_port; do
     [[ -z "$id" ]] && continue
-    local socket active
+    local socket active warning
     socket=$(control_socket_for "$id")
     if is_tunnel_active "$ssh_host" "$socket" "$local_port"; then
       active=true
+      warning=$(check_forward_warning "$id")
     else
       active=false
+      warning=""
       # Stale socket from an unclean exit — clean it up so the next start
       # doesn't have to special-case a dead file.
       [[ -S "$socket" ]] && rm -f "$socket"
     fi
     active_map=$(jq --arg id "$id" --argjson active "$active" '. + {($id): $active}' <<<"$active_map")
+    warning_map=$(jq --arg id "$id" --arg warning "$warning" '. + {($id): $warning}' <<<"$warning_map")
   done < <(jq -r '.tunnels[] | [.id, .sshHost, .localPort] | @tsv' <<<"$tunnels")
 
   local tunnels_with_active
-  tunnels_with_active=$(jq --argjson active_map "$active_map" \
-    '.tunnels | map(. + {active: ($active_map[.id] // false)})' <<<"$tunnels")
+  tunnels_with_active=$(jq --argjson active_map "$active_map" --argjson warning_map "$warning_map" \
+    '.tunnels | map(. + {active: ($active_map[.id] // false),
+                          forwardWarning: ($warning_map[.id] // "")})' <<<"$tunnels")
 
   jq -n --argjson tunnels "$tunnels_with_active" '{tunnels: $tunnels}'
 }
