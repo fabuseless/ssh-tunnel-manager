@@ -222,195 +222,222 @@ Item {
               width: formColumn.width
               spacing: Style.spacing.xl
 
-              Text {
-                textFormat: Text.PlainText
-                text: "Name"
-                color: Color.muted
-                font.family: root.family
-                font.pixelSize: Style.font.bodySmall
-              }
-              TextField {
+              Column {
                 width: fieldsColumn.width
-                text: root.nameDraft
-                placeholderText: "My Tunnel"
-                onTextChanged: root.nameDraft = text
-              }
-              Text {
-                textFormat: Text.PlainText
-                visible: !!root.fieldErrors.name
-                text: root.fieldErrors.name || ""
-                color: Color.urgent
-                font.family: root.family
-                font.pixelSize: Style.font.caption
+                spacing: Style.spacing.md
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Name"
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+                TextField {
+                  width: fieldsColumn.width
+                  text: root.nameDraft
+                  placeholderText: "My Tunnel"
+                  onTextChanged: root.nameDraft = text
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: !!root.fieldErrors.name
+                  text: root.fieldErrors.name || ""
+                  color: Color.urgent
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
               }
 
-              Text {
-                textFormat: Text.PlainText
-                text: "Host"
-                color: Color.muted
-                font.family: root.family
-                font.pixelSize: Style.font.bodySmall
-              }
-              TextField {
-                id: hostField
+              Column {
                 width: fieldsColumn.width
-                text: root.sshHostDraft
-                placeholderText: "user@host"
-                onTextChanged: root.sshHostDraft = text
-              }
-              // A themed autocomplete list rather than a ComboBox: an
-              // editable ComboBox's `editText` and `currentIndex` are
-              // separate state, so setting editText programmatically (as a
-              // draft-bound field needs to) never marks anything as
-              // "selected" in the dropdown — it only looks picked until the
-              // user reopens the list and clicks the same entry again. Here
-              // the text field IS the value, always; the list below is just
-              // a convenience that writes into the same property.
-              //
-              // Bounded and independently scrollable: a long ~/.ssh/config
-              // must produce a short dropdown, not one that expands the
-              // whole form and buries Local Port/Remote Host/Remote Port/
-              // Create below every alias. The scrollbar is only forced
-              // visible when the list actually overflows the cap, so a
-              // short match list shows no persistent scrollbar clutter.
-              ScrollView {
-                id: hostSuggestionsScroller
-                readonly property int maxHeight: Style.space(160)
-                width: fieldsColumn.width
-                visible: hostField.activeFocus && root.filteredHosts().length > 0
-                implicitHeight: Math.min(hostSuggestionsColumn.implicitHeight, maxHeight)
-                clip: true
-                ScrollBar.vertical.policy: hostSuggestionsColumn.implicitHeight > maxHeight
-                  ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+                spacing: Style.spacing.md
 
-                Column {
-                  id: hostSuggestionsColumn
-                  width: hostSuggestionsScroller.availableWidth
-                  spacing: Style.spacing.xxs
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Host"
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+                TextField {
+                  id: hostField
+                  width: fieldsColumn.width
+                  text: root.sshHostDraft
+                  placeholderText: "user@host"
+                  onTextChanged: root.sshHostDraft = text
+                }
+                // A themed autocomplete list rather than a ComboBox: an
+                // editable ComboBox's `editText` and `currentIndex` are
+                // separate state, so setting editText programmatically (as
+                // a draft-bound field needs to) never marks anything as
+                // "selected" in the dropdown — it only looks picked until
+                // the user reopens the list and clicks the same entry
+                // again. Here the text field IS the value, always; the
+                // list below is just a convenience that writes into the
+                // same property.
+                //
+                // Bounded and independently scrollable: a long
+                // ~/.ssh/config must produce a short dropdown, not one that
+                // expands the whole form and buries Local Port/Remote
+                // Host/Remote Port/Create below every alias. The scrollbar
+                // is only forced visible when the list actually overflows
+                // the cap, so a short match list shows no persistent
+                // scrollbar clutter.
+                ScrollView {
+                  id: hostSuggestionsScroller
+                  readonly property int maxHeight: Style.space(160)
+                  width: fieldsColumn.width
+                  visible: hostField.activeFocus && root.filteredHosts().length > 0
+                  implicitHeight: Math.min(hostSuggestionsColumn.implicitHeight, maxHeight)
+                  clip: true
+                  ScrollBar.vertical.policy: hostSuggestionsColumn.implicitHeight > maxHeight
+                    ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
 
-                  Repeater {
-                    model: hostSuggestionsScroller.visible ? root.filteredHosts() : []
-                    delegate: Rectangle {
-                      id: suggestionRow
-                      required property string modelData
-                      width: hostSuggestionsColumn.width
-                      height: suggestionText.implicitHeight + Style.spacing.sm * 2
-                      radius: Style.cornerRadius
-                      color: suggestionMouse.containsMouse
-                        ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+                  Column {
+                    id: hostSuggestionsColumn
+                    width: hostSuggestionsScroller.availableWidth
+                    spacing: Style.spacing.xxs
 
-                      Text {
-                        id: suggestionText
-                        anchors {
-                          left: parent.left; right: parent.right
-                          verticalCenter: parent.verticalCenter
-                          leftMargin: Style.spacing.sm
+                    Repeater {
+                      model: hostSuggestionsScroller.visible ? root.filteredHosts() : []
+                      delegate: Rectangle {
+                        id: suggestionRow
+                        required property string modelData
+                        width: hostSuggestionsColumn.width
+                        height: suggestionText.implicitHeight + Style.spacing.sm * 2
+                        radius: Style.cornerRadius
+                        color: suggestionMouse.containsMouse
+                          ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+
+                        Text {
+                          id: suggestionText
+                          anchors {
+                            left: parent.left; right: parent.right
+                            verticalCenter: parent.verticalCenter
+                            leftMargin: Style.spacing.sm
+                          }
+                          textFormat: Text.PlainText
+                          text: suggestionRow.modelData
+                          color: root.foreground
+                          font.family: root.family
+                          font.pixelSize: Style.font.bodySmall
+                          elide: Text.ElideRight
                         }
-                        textFormat: Text.PlainText
-                        text: suggestionRow.modelData
-                        color: root.foreground
-                        font.family: root.family
-                        font.pixelSize: Style.font.bodySmall
-                        elide: Text.ElideRight
-                      }
 
-                      MouseArea {
-                        id: suggestionMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: {
-                          root.sshHostDraft = suggestionRow.modelData
-                          hostField.forceActiveFocus()
+                        MouseArea {
+                          id: suggestionMouse
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          onClicked: {
+                            root.sshHostDraft = suggestionRow.modelData
+                            hostField.forceActiveFocus()
+                          }
                         }
                       }
                     }
                   }
                 }
-              }
-              Text {
-                textFormat: Text.PlainText
-                width: fieldsColumn.width
-                text: "Pick a Host from ~/.ssh/config, or type any user@host."
-                wrapMode: Text.WordWrap
-                color: Color.muted
-                font.family: root.family
-                font.pixelSize: Style.font.caption
-              }
-              Text {
-                textFormat: Text.PlainText
-                visible: !!root.fieldErrors.sshHost
-                text: root.fieldErrors.sshHost || ""
-                color: Color.urgent
-                font.family: root.family
-                font.pixelSize: Style.font.caption
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Local port"
-                color: Color.muted
-                font.family: root.family
-                font.pixelSize: Style.font.bodySmall
-              }
-              TextField {
-                width: fieldsColumn.width
-                text: root.localPortDraft
-                placeholderText: "8080"
-                validator: IntValidator { bottom: 1; top: 65535 }
-                onTextChanged: root.localPortDraft = text
-              }
-              Text {
-                textFormat: Text.PlainText
-                visible: !!root.fieldErrors.localPort
-                text: root.fieldErrors.localPort || ""
-                color: Color.urgent
-                font.family: root.family
-                font.pixelSize: Style.font.caption
+                Text {
+                  textFormat: Text.PlainText
+                  width: fieldsColumn.width
+                  text: "Pick a Host from ~/.ssh/config, or type any user@host."
+                  wrapMode: Text.WordWrap
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: !!root.fieldErrors.sshHost
+                  text: root.fieldErrors.sshHost || ""
+                  color: Color.urgent
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
               }
 
-              Text {
-                textFormat: Text.PlainText
-                text: "Remote host"
-                color: Color.muted
-                font.family: root.family
-                font.pixelSize: Style.font.bodySmall
-              }
-              TextField {
+              Column {
                 width: fieldsColumn.width
-                text: root.remoteHostDraft
-                placeholderText: "127.0.0.1"
-                onTextChanged: root.remoteHostDraft = text
-              }
-              Text {
-                textFormat: Text.PlainText
-                visible: !!root.fieldErrors.remoteHost
-                text: root.fieldErrors.remoteHost || ""
-                color: Color.urgent
-                font.family: root.family
-                font.pixelSize: Style.font.caption
+                spacing: Style.spacing.md
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Local port"
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+                TextField {
+                  width: fieldsColumn.width
+                  text: root.localPortDraft
+                  placeholderText: "8080"
+                  validator: IntValidator { bottom: 1; top: 65535 }
+                  onTextChanged: root.localPortDraft = text
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: !!root.fieldErrors.localPort
+                  text: root.fieldErrors.localPort || ""
+                  color: Color.urgent
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
               }
 
-              Text {
-                textFormat: Text.PlainText
-                text: "Remote port"
-                color: Color.muted
-                font.family: root.family
-                font.pixelSize: Style.font.bodySmall
-              }
-              TextField {
+              Column {
                 width: fieldsColumn.width
-                text: root.remotePortDraft
-                placeholderText: "80"
-                validator: IntValidator { bottom: 1; top: 65535 }
-                onTextChanged: root.remotePortDraft = text
+                spacing: Style.spacing.md
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Remote host"
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+                TextField {
+                  width: fieldsColumn.width
+                  text: root.remoteHostDraft
+                  placeholderText: "127.0.0.1"
+                  onTextChanged: root.remoteHostDraft = text
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: !!root.fieldErrors.remoteHost
+                  text: root.fieldErrors.remoteHost || ""
+                  color: Color.urgent
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
               }
-              Text {
-                textFormat: Text.PlainText
-                visible: !!root.fieldErrors.remotePort
-                text: root.fieldErrors.remotePort || ""
-                color: Color.urgent
-                font.family: root.family
-                font.pixelSize: Style.font.caption
+
+              Column {
+                width: fieldsColumn.width
+                spacing: Style.spacing.md
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Remote port"
+                  color: Color.muted
+                  font.family: root.family
+                  font.pixelSize: Style.font.bodySmall
+                }
+                TextField {
+                  width: fieldsColumn.width
+                  text: root.remotePortDraft
+                  placeholderText: "80"
+                  validator: IntValidator { bottom: 1; top: 65535 }
+                  onTextChanged: root.remotePortDraft = text
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  visible: !!root.fieldErrors.remotePort
+                  text: root.fieldErrors.remotePort || ""
+                  color: Color.urgent
+                  font.family: root.family
+                  font.pixelSize: Style.font.caption
+                }
               }
 
               Text {
