@@ -33,6 +33,7 @@ Item {
   property var fieldErrors: ({})
   property string formError: ""
   property bool saving: false
+  property bool deleteConfirmOpen: false
 
   readonly property bool editing: root.editId !== ""
 
@@ -47,6 +48,7 @@ Item {
     root.formError = ""
     root.fieldErrors = ({})
     root.saving = false
+    root.deleteConfirmOpen = false
     try {
       var payload = payloadJson ? JSON.parse(payloadJson) : {}
       root.editId = String(payload.editId || "")
@@ -194,7 +196,10 @@ Item {
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
         anchors.rightMargin: card.contentRightInset
-        onCloseRequested: root.dismiss()
+        onCloseRequested: {
+          if (root.deleteConfirmOpen) root.deleteConfirmOpen = false
+          else root.dismiss()
+        }
 
         ColumnLayout {
           id: formColumn
@@ -480,8 +485,26 @@ Item {
               text: "Delete"
               foreground: Color.urgent
               fontFamily: root.family
-              onClicked: root.remove()
+              onClicked: if (!root.saving) root.deleteConfirmOpen = true
             }
+          }
+        }
+
+        // Declared after formColumn so it paints on top and blocks clicks
+        // to the fields/buttons underneath while open.
+        ConfirmDialog {
+          anchors.fill: parent
+          opened: root.deleteConfirmOpen
+          message: "Delete “" + root.nameDraft + "”? This stops it first if it's running."
+          confirmText: "Delete"
+          background: root.background
+          foreground: root.foreground
+          fontFamily: root.family
+          cornerRadius: Style.cornerRadius
+          onCanceled: root.deleteConfirmOpen = false
+          onConfirmed: {
+            root.deleteConfirmOpen = false
+            root.remove()
           }
         }
       }
