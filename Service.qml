@@ -100,13 +100,68 @@ QtObject {
     root.pendingToggleRevision++
   }
 
+  // Same optimistic-flip pattern, for the panel row's auto-restart-on-
+  // reboot icon: updateTunnel's round trip (a CRUD call, then a status
+  // refresh) was enough lag on its own that the icon looked unresponsive.
+  property var pendingAutoStart: ({})
+  property int pendingAutoStartRevision: 0
+
+  function isAutoStartPending(id) {
+    return root.pendingAutoStart[id] !== undefined
+  }
+
+  function displayAutoStart(tunnel) {
+    root.pendingAutoStartRevision
+    var pending = root.pendingAutoStart[tunnel.id]
+    if (pending !== undefined) return pending.desired
+    return !!tunnel.autoStart
+  }
+
+  function setPendingAutoStart(id, desired) {
+    root.pendingAutoStart[id] = {
+      desired: desired,
+      deadline: Date.now() + root.pendingToggleTimeout
+    }
+    root.pendingAutoStartRevision++
+    pendingSweep.running = true
+  }
+
+  function clearPendingAutoStart(id) {
+    if (root.pendingAutoStart[id] === undefined) return
+    delete root.pendingAutoStart[id]
+    root.pendingAutoStartRevision++
+  }
+
+  // Sets autoStart on one tunnel, optimistically, then patches it through
+  // the normal update path (which also handles the actual persistence and
+  // any restart-if-connection-changed logic — irrelevant here since
+  // autoStart alone never changes where a tunnel connects to).
+  function setAutoStart(id, desired, onDone) {
+    var tunnel = root.tunnelById(id)
+    if (!tunnel) return
+    root.setPendingAutoStart(id, desired)
+    var payload = {
+      name: tunnel.name,
+      sshHost: tunnel.sshHost,
+      localPort: tunnel.localPort,
+      remoteHost: tunnel.remoteHost,
+      remotePort: tunnel.remotePort,
+      autoStart: desired
+    }
+    root.updateTunnel(id, payload, function(ok, message) {
+      root.clearPendingAutoStart(id)
+      if (!ok) root.lastError = message
+      if (onDone) onDone(ok, message)
+    })
+  }
+
   property Timer pendingSweep: Timer {
     interval: 300
     repeat: true
-    onTriggered: root.sweepPendingToggles()
+    onTriggered: root.sweepPendingState()
   }
 
-  function sweepPendingToggles() {
+  function sweepPendingState() {
     var now = Date.now()
     var changed = false
     var stillPending = false
@@ -119,6 +174,18 @@ QtObject {
       }
     }
     if (changed) root.pendingToggleRevision++
+
+    changed = false
+    for (var id2 in root.pendingAutoStart) {
+      if (root.pendingAutoStart[id2].deadline <= now) {
+        delete root.pendingAutoStart[id2]
+        changed = true
+      } else {
+        stillPending = true
+      }
+    }
+    if (changed) root.pendingAutoStartRevision++
+
     if (!stillPending) pendingSweep.running = false
   }
 

@@ -368,24 +368,17 @@ Panel {
 
                 PanelActionButton {
                   id: autoStartBtn
+                  readonly property bool autoStartOn: root.serviceReady && root.svc.displayAutoStart(modelData)
                   anchors.verticalCenter: parent.verticalCenter
-                  iconText: ""   // fa-anchor
-                  tooltipText: modelData.autoStart
+                  iconText: "\uf021"   // fa-refresh
+                  tooltipText: autoStartOn
                     ? "Auto-restart on reboot: on" : "Auto-restart on reboot: off"
-                  foreground: modelData.autoStart ? Color.accent : Qt.darker(root.foreground, 1.4)
+                  foreground: autoStartOn ? Color.accent : Qt.darker(root.foreground, 1.4)
                   fontFamily: root.fontFamily
                   fontSize: Style.font.icon + 4
                   onClicked: {
                     if (!root.serviceReady) return
-                    var payload = {
-                      name: modelData.name,
-                      sshHost: modelData.sshHost,
-                      localPort: modelData.localPort,
-                      remoteHost: modelData.remoteHost,
-                      remotePort: modelData.remotePort,
-                      autoStart: !modelData.autoStart
-                    }
-                    root.svc.updateTunnel(modelData.id, payload, function(ok, message) {
+                    root.svc.setAutoStart(modelData.id, !autoStartOn, function(ok, message) {
                       if (!ok) root.svc.lastError = message
                     })
                   }
