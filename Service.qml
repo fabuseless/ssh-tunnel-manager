@@ -374,7 +374,13 @@ QtObject {
   function startTunnel(id) {
     if (root.isPending(id)) return
     root.setPendingToggle(id, true)
-    root.controller.runAction(["start", id], function(exitCode, stdout, stderr) {
+    // The action lane is shared across every tunnel (only one start/stop
+    // runs at a time); runAction refuses to overlap and returns false
+    // rather than queuing. Without this check that silently drops the
+    // click entirely — the optimistic flag set above would just sit there
+    // until the sweep timeout, looking stuck, while nothing ever actually
+    // ran. Clear it immediately instead so another click can retry at once.
+    var started = root.controller.runAction(["start", id], function(exitCode, stdout, stderr) {
       // Success: leave the pending flag for refreshStatus's own
       // reconcilePending to clear once it confirms active:true, rather
       // than clearing here and racing that same refreshStatus call below.
@@ -384,18 +390,26 @@ QtObject {
       }
       root.refreshStatus()
     })
+    if (!started) {
+      root.clearPendingToggle(id)
+      root.lastError = "Another tunnel action is still in progress — try again in a moment."
+    }
   }
 
   function stopTunnel(id) {
     if (root.isPending(id)) return
     root.setPendingToggle(id, false)
-    root.controller.runAction(["stop", id], function(exitCode, stdout, stderr) {
+    var started = root.controller.runAction(["stop", id], function(exitCode, stdout, stderr) {
       if (exitCode !== 0) {
         root.lastError = root.extractError(stdout, stderr, "Failed to stop tunnel.")
         root.clearPendingToggle(id)
       }
       root.refreshStatus()
     })
+    if (!started) {
+      root.clearPendingToggle(id)
+      root.lastError = "Another tunnel action is still in progress — try again in a moment."
+    }
   }
 
   function toggleTunnel(id) {
@@ -405,8 +419,12 @@ QtObject {
     else root.startTunnel(id)
   }
 
+  // The crud lane also refuses to overlap itself (runCrud returns false
+  // rather than queuing) — without checking that, a call made while
+  // another is still in flight would never invoke onDone at all, leaving
+  // a caller like the tunnel form's submit button waiting forever.
   function createTunnel(draft, onDone) {
-    root.controller.runCrud(["add", JSON.stringify(draft)], function(exitCode, stdout, stderr) {
+    var started = root.controller.runCrud(["add", JSON.stringify(draft)], function(exitCode, stdout, stderr) {
       if (exitCode === 0) {
         root.refreshStatus()
         if (onDone) onDone(true, "")
@@ -414,10 +432,11 @@ QtObject {
         onDone(false, root.extractError(stdout, stderr, "Could not create tunnel."))
       }
     })
+    if (!started && onDone) onDone(false, "Another action is still in progress — try again in a moment.")
   }
 
   function updateTunnel(id, draft, onDone) {
-    root.controller.runCrud(["update", id, JSON.stringify(draft)], function(exitCode, stdout, stderr) {
+    var started = root.controller.runCrud(["update", id, JSON.stringify(draft)], function(exitCode, stdout, stderr) {
       if (exitCode === 0) {
         root.refreshStatus()
         if (onDone) onDone(true, "")
@@ -425,10 +444,11 @@ QtObject {
         onDone(false, root.extractError(stdout, stderr, "Could not update tunnel."))
       }
     })
+    if (!started && onDone) onDone(false, "Another action is still in progress — try again in a moment.")
   }
 
   function deleteTunnel(id, onDone) {
-    root.controller.runCrud(["remove", id], function(exitCode, stdout, stderr) {
+    var started = root.controller.runCrud(["remove", id], function(exitCode, stdout, stderr) {
       if (exitCode === 0) {
         root.refreshStatus()
         if (onDone) onDone(true, "")
@@ -436,6 +456,7 @@ QtObject {
         onDone(false, root.extractError(stdout, stderr, "Could not delete tunnel."))
       }
     })
+    if (!started && onDone) onDone(false, "Another action is still in progress — try again in a moment.")
   }
 
   Component.onCompleted: {
