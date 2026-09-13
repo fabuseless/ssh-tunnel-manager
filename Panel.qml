@@ -225,29 +225,98 @@ Panel {
                 readonly property bool tunnelBusy: root.serviceReady
                   && root.svc.isPending(modelData.id)
 
-                Column {
+                Item {
+                  id: textArea
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - toggleSwitch.width
                     - editBtn.width - deleteBtn.width - (Style.spacing.md * 3)
+                  height: textColumn.implicitHeight
 
-                  Text {
-                    textFormat: Text.PlainText
-                    text: modelData.name
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    elide: Text.ElideRight
-                    width: parent.width
+                  // At rest, both lines elide as before. While this row's
+                  // text area is hovered, a line too long to fit instead
+                  // marquee-scrolls to reveal the rest — same technique as
+                  // the media bar widget's now-playing title
+                  // (plugins/services/media/BarWidget.qml), but gated on
+                  // hover rather than always-on since several long tunnel
+                  // entries scrolling at once in a list would look busy.
+                  //
+                  // The hover MouseArea lives on this plain Item, not on
+                  // the Column below — a Column (like any positioner)
+                  // breaks entirely if a direct child uses anchors.
+                  property bool hovered: false
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    onEntered: textArea.hovered = true
+                    onExited: textArea.hovered = false
                   }
-                  Text {
-                    textFormat: Text.PlainText
-                    text: modelData.sshHost + ":" + modelData.localPort
-                      + " → " + modelData.remoteHost + ":" + modelData.remotePort
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    elide: Text.ElideRight
+
+                  Column {
+                    id: textColumn
                     width: parent.width
+
+                    Item {
+                      id: nameClip
+                      width: textColumn.width
+                      height: nameText.implicitHeight
+                      clip: true
+
+                      Text {
+                        id: nameText
+                        textFormat: Text.PlainText
+                        text: modelData.name
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        elide: textArea.hovered ? Text.ElideNone : Text.ElideRight
+                        width: textArea.hovered ? implicitWidth : nameClip.width
+
+                        readonly property bool needsScroll: implicitWidth > nameClip.width
+
+                        NumberAnimation on x {
+                          running: nameText.needsScroll && textArea.hovered
+                          loops: Animation.Infinite
+                          duration: Math.max(3000, nameText.implicitWidth * 25)
+                          from: 0
+                          to: -(nameText.implicitWidth - nameClip.width)
+                          easing.type: Easing.Linear
+                          onRunningChanged: if (!running) nameText.x = 0
+                        }
+                      }
+                    }
+
+                    Item {
+                      id: subtitleClip
+                      width: textColumn.width
+                      height: subtitleText.implicitHeight
+                      clip: true
+
+                      Text {
+                        id: subtitleText
+                        textFormat: Text.PlainText
+                        text: modelData.sshHost + ":" + modelData.localPort
+                          + " → " + modelData.remoteHost + ":" + modelData.remotePort
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: textArea.hovered ? Text.ElideNone : Text.ElideRight
+                        width: textArea.hovered ? implicitWidth : subtitleClip.width
+
+                        readonly property bool needsScroll: implicitWidth > subtitleClip.width
+
+                        NumberAnimation on x {
+                          running: subtitleText.needsScroll && textArea.hovered
+                          loops: Animation.Infinite
+                          duration: Math.max(3000, subtitleText.implicitWidth * 25)
+                          from: 0
+                          to: -(subtitleText.implicitWidth - subtitleClip.width)
+                          easing.type: Easing.Linear
+                          onRunningChanged: if (!running) subtitleText.x = 0
+                        }
+                      }
+                    }
                   }
                 }
 
