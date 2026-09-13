@@ -149,8 +149,13 @@ QtObject {
       autoStart: desired
     }
     root.updateTunnel(id, payload, function(ok, message) {
-      root.clearPendingAutoStart(id)
-      if (!ok) root.lastError = message
+      // Success: updateTunnel already triggers its own refreshStatus;
+      // leave the pending flag for that call's reconcilePending to clear
+      // once it confirms the new value, rather than racing it here.
+      if (!ok) {
+        root.lastError = message
+        root.clearPendingAutoStart(id)
+      }
       if (onDone) onDone(ok, message)
     })
   }
@@ -223,6 +228,7 @@ QtObject {
         if (parsed && Array.isArray(parsed.tunnels)) {
           root.tunnels = parsed.tunnels
           root.lastError = ""
+          root.reconcilePending()
         }
       } catch (e) {
         // Leave the previous snapshot in place rather than blanking the UI
@@ -230,6 +236,41 @@ QtObject {
       }
     })
     if (started) pollWatchdog.restart()
+  }
+
+  // A pending flag is cleared here — once a fresh status confirms the
+  // real value actually matches what was optimistically set — rather
+  // than the instant an action's own process exits. That process firing
+  // refreshStatus() itself races this exact callback: clearing on exit
+  // alone leaves a real gap where pending is gone but root.tunnels is
+  // still the pre-action snapshot, so the display falls back to the OLD
+  // value for one tick before the fresh data arrives and flips it back —
+  // a visible flicker (confirmed live: blue -> grey -> blue on
+  // autoStart), not just a theoretical race. A pending entry the fresh
+  // data doesn't yet confirm is left alone, so a slow action (a real ssh
+  // connect) keeps showing its optimistic state through an unrelated
+  // poll tick that lands before it's done, rather than flickering back
+  // to stale-old on every such tick.
+  function reconcilePending() {
+    var changed = false
+    for (var id in root.pendingToggles) {
+      var t = root.tunnelById(id)
+      if (t && !!t.active === root.pendingToggles[id].desired) {
+        delete root.pendingToggles[id]
+        changed = true
+      }
+    }
+    if (changed) root.pendingToggleRevision++
+
+    changed = false
+    for (var id2 in root.pendingAutoStart) {
+      var t2 = root.tunnelById(id2)
+      if (t2 && !!t2.autoStart === root.pendingAutoStart[id2].desired) {
+        delete root.pendingAutoStart[id2]
+        changed = true
+      }
+    }
+    if (changed) root.pendingAutoStartRevision++
   }
 
   // Starts every tunnel flagged autoStart on the service's own CRUD lane
@@ -329,8 +370,13 @@ QtObject {
     if (root.isPending(id)) return
     root.setPendingToggle(id, true)
     root.controller.runAction(["start", id], function(exitCode, stdout, stderr) {
-      root.clearPendingToggle(id)
-      if (exitCode !== 0) root.lastError = root.extractError(stdout, stderr, "Failed to start tunnel.")
+      // Success: leave the pending flag for refreshStatus's own
+      // reconcilePending to clear once it confirms active:true, rather
+      // than clearing here and racing that same refreshStatus call below.
+      if (exitCode !== 0) {
+        root.lastError = root.extractError(stdout, stderr, "Failed to start tunnel.")
+        root.clearPendingToggle(id)
+      }
       root.refreshStatus()
     })
   }
@@ -339,8 +385,10 @@ QtObject {
     if (root.isPending(id)) return
     root.setPendingToggle(id, false)
     root.controller.runAction(["stop", id], function(exitCode, stdout, stderr) {
-      root.clearPendingToggle(id)
-      if (exitCode !== 0) root.lastError = root.extractError(stdout, stderr, "Failed to stop tunnel.")
+      if (exitCode !== 0) {
+        root.lastError = root.extractError(stdout, stderr, "Failed to stop tunnel.")
+        root.clearPendingToggle(id)
+      }
       root.refreshStatus()
     })
   }
