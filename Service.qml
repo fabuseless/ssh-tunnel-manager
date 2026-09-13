@@ -80,6 +80,12 @@ QtObject {
   readonly property int pendingToggleTimeout: 33000
 
   function isPending(id) {
+    // pendingToggles is mutated in place, so reading it alone never makes
+    // a binding that calls this reactive — pendingToggleRevision is the
+    // property that actually gets reassigned on every change, so it has
+    // to be read here (matching displayActive below) for any binding
+    // built on this function to notice pending state changing at all.
+    root.pendingToggleRevision
     return root.pendingToggles[id] !== undefined
   }
 

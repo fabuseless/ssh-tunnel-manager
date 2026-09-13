@@ -242,8 +242,22 @@ Panel {
                   if (root.serviceReady) root.svc.pendingToggleRevision
                   return root.serviceReady ? root.svc.displayActive(modelData) : false
                 }
-                readonly property bool tunnelBusy: root.serviceReady
-                  && root.svc.isPending(modelData.id)
+                readonly property bool tunnelBusy: {
+                  // Same reason as tunnelActive above: pendingToggles is
+                  // mutated in place (set/delete on the same object), which
+                  // never fires a property-changed signal on its own —
+                  // pendingToggleRevision is the thing that actually gets
+                  // bumped on every change, so it has to be read here for
+                  // this binding to notice pending ever changing at all.
+                  // Without it, this could evaluate once, latch onto
+                  // whatever value it saw first, and never update again —
+                  // including getting stuck permanently "busy" (and, since
+                  // the toggle now dims itself while busy, permanently
+                  // darkened) the first time it happened to catch a real
+                  // in-flight action.
+                  if (root.serviceReady) root.svc.pendingToggleRevision
+                  return root.serviceReady && root.svc.isPending(modelData.id)
+                }
 
                 Item {
                   id: textArea
