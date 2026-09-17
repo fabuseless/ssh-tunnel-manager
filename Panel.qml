@@ -480,7 +480,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width
-                text: "Tunnels below were found running outside this plugin. They can only be stopped, not edited or auto-started."
+                text: "Found outside the plugin — kill only."
                 wrapMode: Text.WordWrap
                 color: root.dim
                 font.family: root.fontFamily
