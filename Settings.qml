@@ -165,6 +165,11 @@ Item {
     else root.service.createTunnel(payload, onDone)
   }
 
+  function typeLabel() {
+    return root.typeDraft === "remote" ? "Remote tunnel"
+      : (root.typeDraft === "dynamic" ? "Dynamic (SOCKS) tunnel" : "Local tunnel")
+  }
+
   function remove() {
     if (!root.service || !root.editing || root.saving) return
     root.saving = true
@@ -199,7 +204,15 @@ Item {
       id: card
       anchors.centerIn: parent
       width: Math.min(Style.space(460), window.width - Style.gapsOut * 2)
-      height: Math.min(root.mode === "preferences" ? Style.space(320) : Style.space(560),
+      // Sized to the form's own natural content height (not a guessed
+      // constant) so the tunnel form never needs its internal scrollbar
+      // under normal conditions — the window-height cap below is only a
+      // fallback for a genuinely short screen, where the ScrollView's
+      // existing AsNeeded policy still kicks in.
+      height: Math.min(
+        root.mode === "preferences"
+          ? Style.space(320)
+          : formColumn.implicitHeight + card.contentTopInset + card.contentBottomInset,
         window.height - Style.gapsOut * 2)
       radius: Style.cornerRadius
       color: root.background
@@ -229,7 +242,8 @@ Item {
 
           Text {
             textFormat: Text.PlainText
-            text: root.mode === "preferences" ? "Preferences" : (root.editing ? "Edit tunnel" : "New tunnel")
+            text: root.mode === "preferences" ? "Preferences"
+              : (root.editing ? "Edit tunnel - " + root.typeLabel() : "New tunnel")
             color: root.foreground
             font.family: root.family
             font.pixelSize: Style.font.title
@@ -239,9 +253,9 @@ Item {
 
           // Tab switcher: create mode only — changing a tunnel's forward
           // type after creation is really "make a new tunnel," not an
-          // edit (the backend rejects it outright). In edit mode this is
-          // replaced by a fixed read-only label, so its sudden absence
-          // reads as a deliberate constraint rather than a missing control.
+          // edit (the backend rejects it outright). In edit mode the type
+          // is folded into the title above instead, so there's no
+          // separate control that could be mistaken for editable.
           ButtonGroup {
             id: typeSwitcher
             visible: root.mode === "tunnel" && !root.editing
@@ -256,16 +270,6 @@ Item {
             accent: Color.accent
             fontFamily: root.family
             onChanged: function(v) { root.typeDraft = v }
-          }
-
-          Text {
-            visible: root.mode === "tunnel" && root.editing
-            textFormat: Text.PlainText
-            text: root.typeDraft === "remote" ? "Remote tunnel"
-              : (root.typeDraft === "dynamic" ? "Dynamic (SOCKS) tunnel" : "Local tunnel")
-            color: Color.muted
-            font.family: root.family
-            font.pixelSize: Style.font.bodySmall
           }
 
           Column {

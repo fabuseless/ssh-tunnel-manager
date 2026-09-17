@@ -327,7 +327,11 @@ Panel {
                 tooltipText: "New tunnel"
                 foreground: Qt.darker(root.foreground, 1.4)
                 fontFamily: root.fontFamily
-                fontSize: Style.font.icon + 4
+                // A plain "+" glyph doesn't fill its em-box the way the
+                // Nerd Font icons elsewhere in this row do, so it needs a
+                // noticeably larger pixel size to read as the same visual
+                // weight next to the gear icon.
+                fontSize: Style.font.icon + 10
                 onClicked: root.openSettings("")
               }
             }
