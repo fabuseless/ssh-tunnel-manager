@@ -98,10 +98,16 @@ Panel {
     // Neither this Item nor ToggleSwitch has a built-in tooltip the way
     // PanelActionButton does — declared inline here, bound to this
     // item's own hover state, same pattern as the toggle switch's tooltip.
+    // Explicitly anchored to the top-left, just above the name line,
+    // rather than left at its default (centered over the whole, often
+    // much wider than the text itself, availableWidth) — that default
+    // put it floating oddly far from the actual text on a short name.
     PanelToolTip {
       visible: textArea.editable && textArea.hovered
       text: "Edit"
       fontFamily: root.fontFamily
+      x: 0
+      y: -implicitHeight - Style.spacing.xs
     }
 
     Column {
