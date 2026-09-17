@@ -20,21 +20,30 @@
 #                               the probe itself is inconclusive (see
 #                               check_forward_warning).
 #                               Before computing status, silently auto-adopts
-#                               any foreign ssh -L process found running on
-#                               the system (one not spawned by this plugin)
-#                               as a tunnel definition with "foreign":true
-#                               (see auto_adopt_new_ports) — permanently
-#                               marked as such, so the frontend can segregate
-#                               it and restrict it to a kill-only control set.
-#                               Adoption of never-before-seen processes is
-#                               skipped when the autoAdopt preference is off;
-#                               the resync of already-tracked entries is not.
+#                               any foreign ssh -L/-R/-D process found
+#                               running on the system (one not spawned by
+#                               this plugin) as a tunnel definition with
+#                               "foreign":true (see auto_adopt_new_ports) —
+#                               permanently marked as such, so the frontend
+#                               can segregate it and restrict it to a
+#                               kill-only control set. Adoption of
+#                               never-before-seen processes is skipped when
+#                               the autoAdopt preference is off; the resync
+#                               of already-tracked entries is not.
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
-#   add <json>                 validate + append a new tunnel definition
+#   add <json>                 validate + append a new tunnel definition.
+#                               "type" ("local"/"remote"/"dynamic", default
+#                               "local") picks the ssh flag used (-L/-R/-D)
+#                               and is fixed forever after creation — see
+#                               "update" below
 #   update <id> <json>         validate + patch an existing tunnel definition.
-#                               if it was running AND a connection-relevant
-#                               field actually changed (sshHost/localPort/
-#                               remoteHost/remotePort — not name/autoStart),
+#                               fails if the payload tries to change "type"
+#                               — delete and recreate for that. if it was
+#                               running AND a connection-relevant field
+#                               actually changed (sshHost/localPort, plus
+#                               remoteHost/remotePort for local/remote —
+#                               meaningless and skipped for dynamic, which
+#                               never has them — not name/autoStart),
 #                               stops and restarts it with the new settings
 #                               (best-effort — a failed restart still leaves
 #                               the edit saved, just shows inactive, same as
@@ -60,7 +69,7 @@
 #   - host/port fields are re-validated here even if a caller already did
 #   - liveness/teardown use ssh's own ControlMaster socket, never raw PIDs,
 #     with ONE narrow, explicitly scoped exception:
-#   - killing a *foreign* (non-plugin) ssh -L process — only ever reached
+#   - killing a *foreign* (non-plugin) ssh -L/-R/-D process — only ever reached
 #     via `do_stop`'s fallback for a definition with no control socket yet
 #     (e.g. one auto-adopted moments ago, never yet restarted through us) —
 #     is only ever a candidate if its argv does NOT contain our own
@@ -126,23 +135,45 @@ validate_whole() {
       and (test("[ \t\r\n]") | not);
     def valid_port:
       type == "number" and (floor == .) and . >= 1 and . <= 65535;
+    def valid_type:
+      (. // "local") | IN("local", "remote", "dynamic");
+    # remoteHost/remotePort are meaningless for a dynamic (-D SOCKS)
+    # tunnel — no fixed destination exists to store — so they are only
+    # required for local/remote. localPort itself stays required for
+    # all three: it is always the one port number the type actually
+    # needs (bind port for local/dynamic, the port opened on the
+    # REMOTE side for remote — same field name, different meaning,
+    # documented at every read site rather than renamed).
     def valid_tunnel:
       (.id | valid_id)
       and (.name | type == "string" and length > 0 and length <= 100)
       and (.sshHost | valid_str_field)
       and (.localPort | valid_port)
-      and (.remoteHost | valid_str_field)
-      and (.remotePort | valid_port)
+      and (.type | valid_type)
+      and ((.type // "local") == "dynamic" or (.remoteHost | valid_str_field))
+      and ((.type // "local") == "dynamic" or (.remotePort | valid_port))
       and ((if .autoStart == null then false else .autoStart end) | type == "boolean")
       and ((if .foreign == null then false else .foreign end) | type == "boolean")
       and ((if .favourite == null
             then (if .autoStart == null then false else .autoStart end)
             else .favourite end) | type == "boolean");
+    # Port-uniqueness scope: local/dynamic both really do bind this
+    # machine own port space, so they must stay mutually unique the way a
+    # flat check always enforced. remote own "port" is opened on the far
+    # (sshHost) side instead — not a local bind at all, so it can only
+    # ever collide with ANOTHER remote tunnel to that SAME sshHost, never
+    # with a local/dynamic tunnel own real local port, and never with a
+    # remote tunnel to a DIFFERENT host reusing the same port number.
+    def port_key:
+      if (.type // "local") == "remote"
+      then {scope: .sshHost, port: .localPort}
+      else {scope: "local", port: .localPort}
+      end;
     (.schemaVersion == 1)
     and (.tunnels | type == "array")
     and (.tunnels | all(.[]; valid_tunnel))
     and ((.tunnels | map(.id) | unique | length) == (.tunnels | length))
-    and ((.tunnels | map(.localPort) | unique | length) == (.tunnels | length))
+    and ((.tunnels | map(port_key) | unique | length) == (.tunnels | length))
     and ((if .autoAdopt == null then true else .autoAdopt end) | type == "boolean")
     and ((if .killAutosshFully == null then true else .killAutosshFully end) | type == "boolean")
   ' "$file" >/dev/null 2>&1
@@ -235,6 +266,26 @@ _parse_dash_L() {   # sets _L_bind, _L_port, _L_rhost, _L_rport
   [[ "$_L_port" =~ ^[0-9]+$ && "$_L_rport" =~ ^[0-9]+$ ]] || return 1
 }
 
+# -R shares the exact same "[bind:]port:host:hostport" grammar as -L (only
+# which side of the connection "port" and "host:hostport" actually live on
+# differs) — reuse _parse_dash_L as-is for it, callers just tag the result
+# differently. -D is simpler: just "[bind:]port", no destination at all.
+_parse_dash_D() {   # sets _D_bind, _D_port
+  local spec="$1"; [[ -n "$spec" ]] || return 1
+  local tok='(\[[^]]+\]|[^:]+)'
+  if [[ "$spec" =~ ^${tok}:([0-9]+)$ ]]; then
+    _D_bind="${BASH_REMATCH[1]}"
+    _D_port="${BASH_REMATCH[2]}"
+  elif [[ "$spec" =~ ^([0-9]+)$ ]]; then
+    _D_bind=""
+    _D_port="${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+  _D_bind="${_D_bind#[}"; _D_bind="${_D_bind%]}"
+  [[ "$_D_port" =~ ^[0-9]+$ ]] || return 1
+}
+
 # ssh flags that consume the NEXT argv token as their value, when given in
 # bare "-o value" form rather than glued "-ovalue"/"-o=value".
 ssh_value_opt() {
@@ -245,14 +296,16 @@ ssh_value_opt() {
 }
 
 # Best-effort parse of one ssh process's argv (array $argv, argv[0]="ssh").
-# Sets is_ours, dest, forwards — forwards is a FLAT array, four elements
-# per -L flag found (bind, port, host, hostport in that order; a process
-# can have more than one -L, e.g. "ssh -L 8080:h1:80 -L 9090:h2:90 host"
-# forwards two independent ports through the one session). Deliberately
-# not a delimited string to split later: bind is legitimately empty for a
-# 3-field -L spec, and bash's `read` collapses a leading tab/space
-# delimiter as if the field weren't there at all, silently shifting every
-# later field over by one — a flat array has no delimiter to collapse.
+# Sets is_ours, dest, forwards — forwards is a FLAT array, five elements
+# per -L/-R/-D flag found (type, bind, port, host, hostport in that order —
+# host/hostport are empty strings for a -D entry, which has no destination
+# at all). A process can have more than one forwarding flag, and can even
+# mix types, e.g. "ssh -L 8080:h1:80 -D 1080 host" runs a local forward and
+# a SOCKS proxy through the one session. Deliberately not a delimited
+# string to split later: bind is legitimately empty for a 3-field -L/-R
+# spec, and bash's `read` collapses a leading tab/space delimiter as if the
+# field were not there at all, silently shifting every later field over by
+# one — a flat array has no delimiter to collapse.
 #
 # ssh's own grammar is "ssh [options] destination [command [arg ...]]" —
 # destination is the FIRST positional, not the last. A single forward
@@ -286,7 +339,21 @@ parse_ssh_argv() {
         local spec="${tok#-L}"
         if [[ -z "$spec" ]]; then spec="${argv[i+1]:-}"; consumed[i+1]=1; fi
         if _parse_dash_L "$spec"; then
-          forwards+=("$_L_bind" "$_L_port" "$_L_rhost" "$_L_rport")
+          forwards+=("local" "$_L_bind" "$_L_port" "$_L_rhost" "$_L_rport")
+        fi
+        ;;
+      -R|-R*)
+        local rspec="${tok#-R}"
+        if [[ -z "$rspec" ]]; then rspec="${argv[i+1]:-}"; consumed[i+1]=1; fi
+        if _parse_dash_L "$rspec"; then
+          forwards+=("remote" "$_L_bind" "$_L_port" "$_L_rhost" "$_L_rport")
+        fi
+        ;;
+      -D|-D*)
+        local dspec="${tok#-D}"
+        if [[ -z "$dspec" ]]; then dspec="${argv[i+1]:-}"; consumed[i+1]=1; fi
+        if _parse_dash_D "$dspec"; then
+          forwards+=("dynamic" "$_D_bind" "$_D_port" "" "")
         fi
         ;;
       -*)
@@ -303,20 +370,22 @@ parse_ssh_argv() {
   done
 }
 
-# Scans /proc for ssh -L processes we did not spawn ourselves. Every helper
-# call here fails closed (`|| continue`) rather than a bare non-zero: under
-# `set -euo pipefail`, one unreadable/vanished /proc entry — routine, since
-# processes come and go constantly — must never abort the whole status poll.
+# Scans /proc for ssh -L/-R/-D processes we did not spawn ourselves. Every
+# helper call here fails closed (`|| continue`) rather than a bare non-zero:
+# under `set -euo pipefail`, one unreadable/vanished /proc entry — routine,
+# since processes come and go constantly — must never abort the whole
+# status poll.
 #
-# One process can forward more than one port (multiple -L flags on the
-# same ssh session) — this emits one array entry per forward, not one per
-# pid, all sharing that pid/startTicks/dest. Downstream (auto_adopt_new_ports,
-# do_stop's fallback) already key off localPort per entry, so this needs no
-# further plumbing there. One real consequence worth knowing: since these
-# forwards all live inside the same ssh process, stopping any ONE of them
-# through the plugin stops the whole process — every other forward on that
-# same session goes down with it. That's not a plugin limitation to work
-# around, it's just what one ssh -L -L session actually is.
+# One process can forward more than one port, even mixing types (multiple
+# -L/-R/-D flags on the same ssh session) — this emits one array entry per
+# forward, not one per pid, all sharing that pid/startTicks/dest. Downstream
+# (auto_adopt_new_ports, do_stop's fallback) already key off (type,
+# localPort[, sshHost for remote]) per entry, so this needs no further
+# plumbing there. One real consequence worth knowing: since these forwards
+# all live inside the same ssh process, stopping any ONE of them through the
+# plugin stops the whole process — every other forward on that same session
+# goes down with it. That is not a plugin limitation to work around, it is
+# just what one multi-forward ssh session actually is.
 #
 # comm alone misses a renamed/symlinked ssh binary (comm reflects the name
 # it was invoked as, e.g. a "myssh -> /usr/bin/ssh" convenience symlink
@@ -351,18 +420,18 @@ discover_foreign_ssh_tunnels() {
     $is_ours && continue
     [[ -n "$dest" && ${#forwards[@]} -gt 0 ]] || continue
 
-    local j bind lp rh rp
-    for (( j=0; j<${#forwards[@]}; j+=4 )); do
-      bind="${forwards[j]}"; lp="${forwards[j+1]}"
-      rh="${forwards[j+2]}"; rp="${forwards[j+3]}"
+    local j fwd_type bind lp rh rp
+    for (( j=0; j<${#forwards[@]}; j+=5 )); do
+      fwd_type="${forwards[j]}"; bind="${forwards[j+1]}"; lp="${forwards[j+2]}"
+      rh="${forwards[j+3]}"; rp="${forwards[j+4]}"
       [[ -n "$lp" ]] || continue
 
       out=$(jq --argjson pid "$pid" --argjson start "$proc_starttime" \
         --arg dest "$dest" --argjson lp "$lp" \
         --arg rh "${rh:-}" --argjson rp "${rp:-null}" \
-        --arg bind "${bind:-}" \
+        --arg bind "${bind:-}" --arg type "$fwd_type" \
         '. + [{pid:$pid, startTicks:$start, sshHost:$dest, localPort:$lp,
-               remoteHost:$rh, remotePort:$rp, bindAddress:$bind}]' <<<"$out")
+               remoteHost:$rh, remotePort:$rp, bindAddress:$bind, type:$type}]' <<<"$out")
       count=$((count + 1))
       (( count >= 50 )) && break 2   # cheap sanity cap (total forwards), not a hard requirement
     done
@@ -422,8 +491,13 @@ probe_forward_health() {   # $1=local_port; prints healthy|refused|"" (inconclus
   esac
 }
 
+# $4=type (default "local"), $5=discovered (optional, a pre-scanned JSON
+# array from discover_foreign_ssh_tunnels — do_status already computes one
+# per poll for adoption and passes it through here so this does not have
+# to re-scan /proc a second time per tunnel; callers with no such array
+# handy just omit it and this scans fresh, only when actually needed).
 is_tunnel_active() {
-  local ssh_host="$1" socket="$2" local_port="${3:-}"
+  local ssh_host="$1" socket="$2" local_port="${3:-}" type="${4:-local}" discovered="${5:-}"
   if [[ -S "$socket" ]] && ssh -S "$socket" -O check "$ssh_host" >/dev/null 2>&1; then
     return 0
   fi
@@ -432,6 +506,27 @@ is_tunnel_active() {
   # Display-only: do_start's own idempotency check deliberately does NOT
   # use this, so a real start attempt still gets a clean
   # ExitOnForwardFailure error instead of an ambiguous no-op.
+  #
+  # A remote (-R) forward has no local bind at all to probe — its "port"
+  # is opened on the REMOTE (sshHost) side — so port_has_listener is
+  # meaningless for it. Instead: does a fresh discovery scan still show a
+  # foreign process that requested this exact (sshHost, remote, port)
+  # forward? This proves the process is still running and still asking
+  # for that forward — it does NOT prove the remote bind is still held.
+  # OpenSSH does not exit on a failed/lost remote bind unless
+  # ExitOnForwardFailure was passed, which a foreign (not plugin-started)
+  # invocation is not guaranteed to have used — an intrinsic, unclosable
+  # limitation from the client side, not a bug. A PLUGIN-started remote
+  # tunnel is unaffected by any of this: do_start always sets
+  # ExitOnForwardFailure=yes, so its live control socket (checked above)
+  # already guarantees the bind succeeded.
+  if [[ "$type" == "remote" ]]; then
+    [[ -n "$discovered" ]] || discovered=$(discover_foreign_ssh_tunnels)
+    jq -e --arg h "$ssh_host" --argjson p "${local_port:-null}" \
+      '.[] | select(.type == "remote" and .sshHost == $h and .localPort == $p)' \
+      <<<"$discovered" >/dev/null 2>&1
+    return $?
+  fi
   [[ -n "$local_port" ]] && port_has_listener "$local_port"
 }
 
@@ -488,20 +583,21 @@ check_forward_warning() {   # $1=id $2=local_port; prints the failure detail, or
   printf '%s' "$reason"
 }
 
-# For every foreign ssh -L process not already tracked by an existing
-# definition (by local port), silently persists it as a normal tunnel via
-# the same write_config/validate_whole path do_add uses — no special-cased
-# storage, no new validation logic. From the next read of tunnels.json
-# onward it is a completely ordinary entry.
+# For every foreign ssh -L/-R/-D process not already tracked by an existing
+# definition (matched by type/localPort, and by sshHost too for remote —
+# see the port_key comment in validate_whole for why), silently persists it
+# as a normal tunnel via the same write_config/validate_whole path do_add
+# uses — no special-cased storage, no new validation logic. From the next
+# read of tunnels.json onward it is a completely ordinary entry.
 #
 # A definition with no control socket yet is still foreign-backed: the
-# process actually listening on its local port could have been replaced by
-# a completely different manual command since it was first adopted (same
-# port, different destination). Since a socketless entry's "active" state
-# already comes from a fresh port_has_listener probe every poll (see
+# process actually behind it could have been replaced by a completely
+# different manual command since it was first adopted (same port, and same
+# sshHost for remote, different destination). Since a socketless entry's
+# "active" state already comes from a fresh liveness check every poll (see
 # is_tunnel_active), re-sync its sshHost/remoteHost/remotePort from that
-# same fresh discovery scan too, so stored details can't silently drift
-# from what's actually running. A definition WITH a live control socket is
+# same fresh discovery scan too, so stored details cannot silently drift
+# from what is actually running. A definition WITH a live control socket is
 # never touched here — that process is guaranteed to be the one we spawned
 # from this exact config, so there is nothing to drift.
 auto_adopt_new_ports() {
@@ -510,11 +606,25 @@ auto_adopt_new_ports() {
   adopt_enabled=$(jq -r 'if .autoAdopt == null then true else .autoAdopt end' "$config_file")
   count=$(jq 'length' <<<"$discovered")
   for ((i = 0; i < count; i++)); do
-    local entry lp existing_tunnel
+    local entry lp fwd_type existing_tunnel
     entry=$(jq -c ".[$i]" <<<"$discovered")
     lp=$(jq -r '.localPort' <<<"$entry")
-    existing_tunnel=$(jq -c --argjson p "$lp" '.tunnels[]? | select(.localPort == $p)' \
-      "$config_file" 2>/dev/null) || existing_tunnel=""
+    fwd_type=$(jq -r '.type' <<<"$entry")
+    # Matching scope mirrors validate_whole's port_key: local/dynamic both
+    # share this machine's real port space (match on port alone), remote
+    # is scoped per sshHost (its "port" lives on the far side, so it can
+    # only ever be the same slot as ANOTHER remote tunnel to that exact
+    # host — never a local/dynamic tunnel, never a remote tunnel to a
+    # different host reusing the same port number).
+    if [[ "$fwd_type" == "remote" ]]; then
+      existing_tunnel=$(jq -c --argjson p "$lp" --arg h "$(jq -r '.sshHost' <<<"$entry")" \
+        '.tunnels[]? | select((.type // "local") == "remote" and .sshHost == $h and .localPort == $p)' \
+        "$config_file" 2>/dev/null) || existing_tunnel=""
+    else
+      existing_tunnel=$(jq -c --argjson p "$lp" \
+        '.tunnels[]? | select((.type // "local") != "remote" and .localPort == $p)' \
+        "$config_file" 2>/dev/null) || existing_tunnel=""
+    fi
 
     local ssh_host remote_host remote_port
     ssh_host=$(jq -r '.sshHost' <<<"$entry")
@@ -533,12 +643,24 @@ auto_adopt_new_ports() {
       name="$ssh_host"
       config_now=$(cat "$config_file")
       id=$(new_tunnel_id "$name" "$config_now")
-      new_tunnel=$(jq -n \
-        --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
-        --argjson localPort "$lp" --arg remoteHost "$remote_host" \
-        --argjson remotePort "$remote_port" \
-        '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
-          remoteHost:$remoteHost, remotePort:$remotePort, foreign:true}')
+      if [[ "$fwd_type" == "dynamic" ]]; then
+        # No fixed destination exists for a SOCKS proxy — nothing
+        # meaningful to store for remoteHost/remotePort, so they are
+        # simply omitted rather than written as empty/placeholder values.
+        new_tunnel=$(jq -n \
+          --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+          --argjson localPort "$lp" --arg type "$fwd_type" \
+          '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
+            type:$type, foreign:true}')
+      else
+        new_tunnel=$(jq -n \
+          --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+          --argjson localPort "$lp" --arg remoteHost "$remote_host" \
+          --argjson remotePort "$remote_port" --arg type "$fwd_type" \
+          '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
+            remoteHost:$remoteHost, remotePort:$remotePort, type:$type,
+            foreign:true}')
+      fi
       write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
       continue
     fi
@@ -548,8 +670,21 @@ auto_adopt_new_ports() {
     socket=$(control_socket_for "$id")
     [[ -S "$socket" ]] && continue   # live control socket: authoritative, never resync
 
+    # dynamic has no remoteHost/remotePort to drift — sshHost is the only
+    # thing that could ever legitimately need resyncing for it, and a
+    # foreign dynamic process changing its OWN destination host while
+    # keeping the exact same local port is exactly the same "someone
+    # replaced the process behind this port" case local/remote already
+    # handle, just without the extra two fields to compare.
     local cur_host cur_rhost cur_rport
     cur_host=$(jq -r '.sshHost' <<<"$existing_tunnel")
+    if [[ "$fwd_type" == "dynamic" ]]; then
+      if [[ "$cur_host" != "$ssh_host" ]]; then
+        write_config '.tunnels |= map(if .id == $id then (. + {sshHost:$sshHost}) else . end)' \
+          --arg id "$id" --arg sshHost "$ssh_host"
+      fi
+      continue
+    fi
     cur_rhost=$(jq -r '.remoteHost' <<<"$existing_tunnel")
     cur_rport=$(jq -r '.remotePort' <<<"$existing_tunnel")
     if [[ "$cur_host" != "$ssh_host" || "$cur_rhost" != "$remote_host" \
@@ -572,23 +707,34 @@ do_status() {
   local tunnels active_map="{}" warning_map="{}"
   tunnels=$(cat "$config_file")   # fresh read — may have just grown
 
-  while IFS=$'\t' read -r id ssh_host local_port; do
+  while IFS=$'\t' read -r id ssh_host local_port fwd_type; do
     [[ -z "$id" ]] && continue
     local socket active warning
     socket=$(control_socket_for "$id")
-    if is_tunnel_active "$ssh_host" "$socket" "$local_port"; then
+    if is_tunnel_active "$ssh_host" "$socket" "$local_port" "$fwd_type" "$discovered"; then
       active=true
-      warning=$(check_forward_warning "$id" "$local_port")
+      # The passive log-tail warning check only makes sense for a local
+      # forward — it tails THIS tunnel's own local port for a recent
+      # relay failure. A remote forward has no local port of its own to
+      # test that way, and a dynamic (SOCKS) tunnel has no fixed
+      # destination at all to be "refused" from — skipped for both,
+      # same "not solvable within reasonable scope" treatment already
+      # given to client-speaks-first protocols elsewhere in this file.
+      if [[ "$fwd_type" == "local" ]]; then
+        warning=$(check_forward_warning "$id" "$local_port")
+      else
+        warning=""
+      fi
     else
       active=false
       warning=""
       # Stale socket from an unclean exit — clean it up so the next start
-      # doesn't have to special-case a dead file.
+      # does not have to special-case a dead file.
       [[ -S "$socket" ]] && rm -f "$socket"
     fi
     active_map=$(jq --arg id "$id" --argjson active "$active" '. + {($id): $active}' <<<"$active_map")
     warning_map=$(jq --arg id "$id" --arg warning "$warning" '. + {($id): $warning}' <<<"$warning_map")
-  done < <(jq -r '.tunnels[] | [.id, .sshHost, .localPort] | @tsv' <<<"$tunnels")
+  done < <(jq -r '.tunnels[] | [.id, .sshHost, .localPort, (.type // "local")] | @tsv' <<<"$tunnels")
 
   # favourite is never actually stored for a tunnel that predates this
   # field — derived at read time here instead, same treatment as
@@ -615,20 +761,25 @@ do_start() {
   local tunnel
   tunnel=$(tunnel_by_id "$id") || fail "unknown tunnel: $id"
 
-  local ssh_host local_port remote_host remote_port
+  local ssh_host local_port remote_host remote_port type
   ssh_host=$(jq -r '.sshHost' <<<"$tunnel")
   local_port=$(jq -r '.localPort' <<<"$tunnel")
   remote_host=$(jq -r '.remoteHost' <<<"$tunnel")
   remote_port=$(jq -r '.remotePort' <<<"$tunnel")
+  type=$(jq -r 'if .type == null then "local" else .type end' <<<"$tunnel")
 
   # Defense in depth: re-check even though validate_whole already passed
   # this data on write. Never build the ssh argv from unchecked strings.
+  # remoteHost/remotePort are not required at all for a dynamic (-D SOCKS)
+  # tunnel — no fixed destination exists to check.
   [[ "$ssh_host" =~ ^[^[:space:]]{1,255}$ ]] || fail "unsafe sshHost in config"
-  [[ "$remote_host" =~ ^[^[:space:]]{1,255}$ ]] || fail "unsafe remoteHost in config"
   [[ "$local_port" =~ ^[0-9]+$ && "$local_port" -ge 1 && "$local_port" -le 65535 ]] \
     || fail "unsafe localPort in config"
-  [[ "$remote_port" =~ ^[0-9]+$ && "$remote_port" -ge 1 && "$remote_port" -le 65535 ]] \
-    || fail "unsafe remotePort in config"
+  if [[ "$type" != "dynamic" ]]; then
+    [[ "$remote_host" =~ ^[^[:space:]]{1,255}$ ]] || fail "unsafe remoteHost in config"
+    [[ "$remote_port" =~ ^[0-9]+$ && "$remote_port" -ge 1 && "$remote_port" -le 65535 ]] \
+      || fail "unsafe remotePort in config"
+  fi
 
   local socket
   socket=$(control_socket_for "$id")
@@ -639,19 +790,26 @@ do_start() {
   fi
   rm -f "$socket"
 
-  # ssh requires an IPv6 literal in a -L spec to be bracketed (bare "::1"
-  # in "port:::1:80" is ambiguous/wrong); a plain IPv4 address or hostname
-  # must NOT be bracketed. A colon in remote_host is the tell — neither
-  # IPv4 nor a valid hostname can contain one.
+  # ssh requires an IPv6 literal in a -L/-R spec to be bracketed (bare
+  # "::1" in "port:::1:80" is ambiguous/wrong); a plain IPv4 address or
+  # hostname must NOT be bracketed. A colon in remote_host is the tell —
+  # neither IPv4 nor a valid hostname can contain one.
   local remote_host_spec="$remote_host"
   [[ "$remote_host" == *:* ]] && remote_host_spec="[$remote_host]"
+
+  local -a fwd_flag=()
+  case "$type" in
+    remote)  fwd_flag=(-R "${local_port}:${remote_host_spec}:${remote_port}") ;;
+    dynamic) fwd_flag=(-D "${local_port}") ;;
+    *)       fwd_flag=(-L "${local_port}:${remote_host_spec}:${remote_port}") ;;
+  esac
 
   local spawn_pid spawn_starttime
   setsid ssh -N -M -S "$socket" \
     -o ExitOnForwardFailure=yes \
     -o ControlPersist=no \
     -o BatchMode=yes \
-    -L "${local_port}:${remote_host_spec}:${remote_port}" \
+    "${fwd_flag[@]}" \
     -- "$ssh_host" \
     >/dev/null 2>>"$runtime_dir/$id.log" &
   spawn_pid=$!
@@ -705,9 +863,10 @@ do_stop() {
   local id="$1"
   local tunnel
   tunnel=$(tunnel_by_id "$id") || fail "unknown tunnel: $id"
-  local ssh_host local_port
+  local ssh_host local_port type
   ssh_host=$(jq -r '.sshHost' <<<"$tunnel")
   local_port=$(jq -r '.localPort' <<<"$tunnel")
+  type=$(jq -r 'if .type == null then "local" else .type end' <<<"$tunnel")
   local socket
   socket=$(control_socket_for "$id")
 
@@ -719,15 +878,22 @@ do_stop() {
       waited=$((waited + 1))
     done
     rm -f "$socket"
-  elif port_has_listener "$local_port"; then
+  elif [[ "$type" == "remote" ]] || port_has_listener "$local_port"; then
     # No control socket — this definition may still be backed by the
     # original foreign process (e.g. just adopted, never yet started
-    # through us). Re-discover whatever is currently listening on this
-    # local port and apply the same verified-kill sequence a standalone
-    # foreign stop would use, rather than silently no-op'ing.
+    # through us). Re-discover it and apply the same verified-kill
+    # sequence a standalone foreign stop would use, rather than silently
+    # no-op'ing. A remote forward has no local port to gate this branch
+    # on at all (port_has_listener would never find one) — go straight to
+    # discovery instead for that type.
     local match
-    match=$(discover_foreign_ssh_tunnels | jq -e --argjson p "$local_port" \
-      '.[] | select(.localPort == $p)') || match=""
+    if [[ "$type" == "remote" ]]; then
+      match=$(discover_foreign_ssh_tunnels | jq -e --arg h "$ssh_host" --argjson p "$local_port" \
+        '.[] | select(.type == "remote" and .sshHost == $h and .localPort == $p)') || match=""
+    else
+      match=$(discover_foreign_ssh_tunnels | jq -e --argjson p "$local_port" \
+        '.[] | select((.type // "local") != "remote" and .localPort == $p)') || match=""
+    fi
     if [[ -n "$match" ]]; then
       resolve_kill_target "$(jq -r '.pid' <<<"$match")" "$(jq -r '.startTicks' <<<"$match")"
       safe_kill_verified "$kill_pid" "$kill_starttime" "$kill_comm" || true
@@ -829,9 +995,12 @@ validate_input_fields() {
     and (.sshHost | type == "string" and length > 0 and length <= 255
          and (test("[ \t\r\n]") | not))
     and (.localPort | type == "number" and (floor == .) and . >= 1 and . <= 65535)
-    and ((.remoteHost // "127.0.0.1") | type == "string" and length > 0 and length <= 255
-         and (test("[ \t\r\n]") | not))
-    and (.remotePort | type == "number" and (floor == .) and . >= 1 and . <= 65535)
+    and ((.type // "local") | IN("local", "remote", "dynamic"))
+    and ((.type // "local") == "dynamic"
+         or ((.remoteHost // "127.0.0.1") | type == "string" and length > 0 and length <= 255
+             and (test("[ \t\r\n]") | not)))
+    and ((.type // "local") == "dynamic"
+         or (.remotePort | type == "number" and (floor == .) and . >= 1 and . <= 65535))
     and ((if .autoStart == null then false else .autoStart end) | type == "boolean")
     and ((if .favourite == null
           then (if .autoStart == null then false else .autoStart end)
@@ -843,7 +1012,7 @@ do_add() {
   local json="$1"
   validate_input_fields "$json" || fail "invalid tunnel definition"
 
-  local existing name ssh_host local_port remote_host remote_port auto_start favourite id
+  local existing name ssh_host local_port remote_host remote_port auto_start favourite type id
   existing=$(cat "$config_file")
   name=$(jq -r '.name' <<<"$json")
   ssh_host=$(jq -r '.sshHost' <<<"$json")
@@ -854,6 +1023,7 @@ do_add() {
   favourite=$(jq -r 'if .favourite == null
     then (if .autoStart == null then false else .autoStart end)
     else .favourite end' <<<"$json")
+  type=$(jq -r 'if .type == null then "local" else .type end' <<<"$json")
 
   # Cascade (server-authoritative, applied regardless of what the caller
   # sent — see do_start's own re-validation / safe_kill_verified's
@@ -865,21 +1035,42 @@ do_add() {
   [[ "$auto_start" == "true" ]] && favourite=true
   [[ "$favourite" == "false" ]] && auto_start=false
 
-  if jq -e --argjson p "$local_port" '.tunnels[] | select(.localPort == $p)' <<<"$existing" >/dev/null 2>&1; then
-    fail "local port $local_port is already used by another tunnel"
+  # Port-uniqueness scope matches validate_whole's port_key exactly: a
+  # remote tunnel's "port" lives on the far (sshHost) side, so it can only
+  # collide with ANOTHER remote tunnel to that same host, never with a
+  # local/dynamic tunnel's real local port or a remote tunnel elsewhere.
+  local port_conflict=false
+  if [[ "$type" == "remote" ]]; then
+    jq -e --argjson p "$local_port" --arg h "$ssh_host" \
+      '.tunnels[] | select((.type // "local") == "remote" and .sshHost == $h and .localPort == $p)' \
+      <<<"$existing" >/dev/null 2>&1 && port_conflict=true
+  else
+    jq -e --argjson p "$local_port" \
+      '.tunnels[] | select((.type // "local") != "remote" and .localPort == $p)' \
+      <<<"$existing" >/dev/null 2>&1 && port_conflict=true
   fi
+  [[ "$port_conflict" == "false" ]] || fail "local port $local_port is already used by another tunnel"
 
   id=$(new_tunnel_id "$name" "$existing")
 
   local new_tunnel
-  new_tunnel=$(jq -n \
-    --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
-    --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
-    --argjson remotePort "$remote_port" --argjson autoStart "$auto_start" \
-    --argjson favourite "$favourite" \
-    '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart,
-      foreign: false, favourite: $favourite}')
+  if [[ "$type" == "dynamic" ]]; then
+    new_tunnel=$(jq -n \
+      --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+      --argjson localPort "$local_port" --argjson autoStart "$auto_start" \
+      --argjson favourite "$favourite" --arg type "$type" \
+      '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
+        type: $type, autoStart: $autoStart, foreign: false, favourite: $favourite}')
+  else
+    new_tunnel=$(jq -n \
+      --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
+      --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
+      --argjson remotePort "$remote_port" --argjson autoStart "$auto_start" \
+      --argjson favourite "$favourite" --arg type "$type" \
+      '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
+        remoteHost: $remoteHost, remotePort: $remotePort, type: $type,
+        autoStart: $autoStart, foreign: false, favourite: $favourite}')
+  fi
 
   write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
 
@@ -891,14 +1082,33 @@ do_update() {
   tunnel_by_id "$id" >/dev/null || fail "unknown tunnel: $id"
   validate_input_fields "$json" || fail "invalid tunnel definition"
 
-  local existing local_port
+  local existing local_port new_type pre_type_check
   existing=$(cat "$config_file")
   local_port=$(jq -r '.localPort' <<<"$json")
+  new_type=$(jq -r 'if .type == null then "local" else .type end' <<<"$json")
+  pre_type_check=$(jq -r 'if .type == null then "local" else .type end' <<<"$(tunnel_by_id "$id")")
 
-  if jq -e --arg id "$id" --argjson p "$local_port" \
-      '.tunnels[] | select(.localPort == $p and .id != $id)' <<<"$existing" >/dev/null 2>&1; then
-    fail "local port $local_port is already used by another tunnel"
+  # type is fixed at creation, never editable — a "remote" tunnel and a
+  # "local" tunnel do not just differ in a couple of fields, they need a
+  # completely different port-uniqueness scope and ssh invocation. The UI
+  # never offers a way to change it (the type switcher is hidden once
+  # editing), but this is enforced here too rather than trusting that
+  # alone — same "never trust the caller alone" philosophy as everywhere
+  # else in this file. Delete and recreate is the correct path for
+  # genuinely wanting a different type.
+  [[ "$new_type" == "$pre_type_check" ]] || fail "cannot change a tunnel type after creation"
+
+  local port_conflict=false
+  if [[ "$new_type" == "remote" ]]; then
+    jq -e --arg id "$id" --argjson p "$local_port" --arg h "$(jq -r '.sshHost' <<<"$json")" \
+      '.tunnels[] | select((.type // "local") == "remote" and .sshHost == $h and .localPort == $p and .id != $id)' \
+      <<<"$existing" >/dev/null 2>&1 && port_conflict=true
+  else
+    jq -e --arg id "$id" --argjson p "$local_port" \
+      '.tunnels[] | select((.type // "local") != "remote" and .localPort == $p and .id != $id)' \
+      <<<"$existing" >/dev/null 2>&1 && port_conflict=true
   fi
+  [[ "$port_conflict" == "false" ]] || fail "local port $local_port is already used by another tunnel"
 
   # Was it running BEFORE this edit? Checked against the pre-edit
   # definition, since that's what the live control socket/listener
@@ -915,7 +1125,7 @@ do_update() {
   pre_remote_port=$(jq -r '.remotePort' <<<"$pre_tunnel")
   pre_socket=$(control_socket_for "$id")
   was_active=false
-  is_tunnel_active "$pre_ssh_host" "$pre_socket" "$pre_local_port" && was_active=true
+  is_tunnel_active "$pre_ssh_host" "$pre_socket" "$pre_local_port" "$pre_type_check" && was_active=true
 
   local new_ssh_host new_remote_host new_remote_port auto_start favourite
   new_ssh_host=$(jq -r '.sshHost' <<<"$json")
@@ -934,25 +1144,49 @@ do_update() {
   # Only a connection-relevant field actually changing warrants a restart
   # — renaming a tunnel, or flipping its autoStart flag, doesn't touch
   # where it connects to or forwards from, so there is nothing for a
-  # running process to need re-pointing at.
+  # running process to need re-pointing at. remoteHost/remotePort are
+  # skipped for a dynamic tunnel: it never had them in the first place
+  # (do_add omits them entirely for that type), so comparing a stored
+  # "null" against whatever placeholder the payload happens to carry
+  # would spuriously mark every single edit — even a pure rename — as
+  # connection-changed and trigger an unneeded restart.
   local connection_changed=false
-  if [[ "$pre_ssh_host" != "$new_ssh_host" || "$pre_local_port" != "$local_port" \
-        || "$pre_remote_host" != "$new_remote_host" || "$pre_remote_port" != "$new_remote_port" ]]; then
+  if [[ "$pre_ssh_host" != "$new_ssh_host" || "$pre_local_port" != "$local_port" ]]; then
     connection_changed=true
+  fi
+  if [[ "$new_type" != "dynamic" ]]; then
+    if [[ "$pre_remote_host" != "$new_remote_host" || "$pre_remote_port" != "$new_remote_port" ]]; then
+      connection_changed=true
+    fi
   fi
 
   local patch
-  patch=$(jq -n \
-    --arg name "$(jq -r '.name' <<<"$json")" \
-    --arg sshHost "$new_ssh_host" \
-    --argjson localPort "$local_port" \
-    --arg remoteHost "$new_remote_host" \
-    --argjson remotePort "$new_remote_port" \
-    --argjson autoStart "$auto_start" \
-    --argjson favourite "$favourite" \
-    '{name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart,
-      favourite: $favourite}')
+  if [[ "$new_type" == "dynamic" ]]; then
+    # type is immutable (checked above), so a dynamic tunnel can only ever
+    # have been CREATED as dynamic — do_add never wrote remoteHost/
+    # remotePort for one in the first place, so there is nothing to clear
+    # here either; the patch simply never mentions those two keys.
+    patch=$(jq -n \
+      --arg name "$(jq -r '.name' <<<"$json")" \
+      --arg sshHost "$new_ssh_host" \
+      --argjson localPort "$local_port" \
+      --argjson autoStart "$auto_start" \
+      --argjson favourite "$favourite" \
+      '{name: $name, sshHost: $sshHost, localPort: $localPort,
+        autoStart: $autoStart, favourite: $favourite}')
+  else
+    patch=$(jq -n \
+      --arg name "$(jq -r '.name' <<<"$json")" \
+      --arg sshHost "$new_ssh_host" \
+      --argjson localPort "$local_port" \
+      --arg remoteHost "$new_remote_host" \
+      --argjson remotePort "$new_remote_port" \
+      --argjson autoStart "$auto_start" \
+      --argjson favourite "$favourite" \
+      '{name: $name, sshHost: $sshHost, localPort: $localPort,
+        remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart,
+        favourite: $favourite}')
+  fi
 
   write_config '.tunnels |= map(if .id == $id then (. + $patch) else . end)' \
     --arg id "$id" --argjson patch "$patch"

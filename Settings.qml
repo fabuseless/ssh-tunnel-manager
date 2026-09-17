@@ -25,6 +25,7 @@ Item {
   property string mode: "tunnel"   // "tunnel" or "preferences"
   property string editId: ""   // "" means create mode
 
+  property string typeDraft: "local"   // "local" | "remote" | "dynamic"
   property string nameDraft: ""
   property string sshHostDraft: ""
   property string localPortDraft: ""
@@ -84,16 +85,19 @@ Item {
     if (root.editing && root.service) {
       var tunnel = root.service.tunnelById(root.editId)
       if (tunnel) {
+        root.typeDraft = tunnel.type || "local"
         root.nameDraft = tunnel.name
         root.sshHostDraft = tunnel.sshHost
         root.localPortDraft = String(tunnel.localPort)
-        root.remoteHostDraft = tunnel.remoteHost
-        root.remotePortDraft = String(tunnel.remotePort)
+        root.remoteHostDraft = tunnel.remoteHost || ""
+        root.remotePortDraft = tunnel.remotePort ? String(tunnel.remotePort) : ""
         root.autoStartDraft = !!tunnel.autoStart
         root.favouriteDraft = !!tunnel.favourite
         return
       }
     }
+    // A fresh create always starts on the Local tab.
+    root.typeDraft = "local"
     root.nameDraft = ""
     root.sshHostDraft = ""
     root.localPortDraft = ""
@@ -105,6 +109,7 @@ Item {
 
   function currentDraft() {
     return {
+      type: root.typeDraft,
       name: root.nameDraft,
       sshHost: root.sshHostDraft,
       localPort: Number(root.localPortDraft),
@@ -231,6 +236,37 @@ Item {
           }
 
           PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+
+          // Tab switcher: create mode only — changing a tunnel's forward
+          // type after creation is really "make a new tunnel," not an
+          // edit (the backend rejects it outright). In edit mode this is
+          // replaced by a fixed read-only label, so its sudden absence
+          // reads as a deliberate constraint rather than a missing control.
+          ButtonGroup {
+            id: typeSwitcher
+            visible: root.mode === "tunnel" && !root.editing
+            Layout.fillWidth: true
+            options: [
+              {value: "local", label: "Local"},
+              {value: "remote", label: "Remote"},
+              {value: "dynamic", label: "Dynamic"}
+            ]
+            value: root.typeDraft
+            foreground: root.foreground
+            accent: Color.accent
+            fontFamily: root.family
+            onChanged: function(v) { root.typeDraft = v }
+          }
+
+          Text {
+            visible: root.mode === "tunnel" && root.editing
+            textFormat: Text.PlainText
+            text: root.typeDraft === "remote" ? "Remote tunnel"
+              : (root.typeDraft === "dynamic" ? "Dynamic (SOCKS) tunnel" : "Local tunnel")
+            color: Color.muted
+            font.family: root.family
+            font.pixelSize: Style.font.bodySmall
+          }
 
           Column {
             id: prefsColumn
@@ -491,7 +527,7 @@ Item {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Local port"
+                  text: root.typeDraft === "remote" ? "Remote port" : "Local port"
                   color: Color.muted
                   font.family: root.family
                   font.pixelSize: Style.font.bodySmall
@@ -516,10 +552,11 @@ Item {
               Column {
                 width: fieldsColumn.width
                 spacing: Style.spacing.md
+                visible: root.typeDraft !== "dynamic"
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Remote host"
+                  text: root.typeDraft === "remote" ? "Forward to host" : "Remote host"
                   color: Color.muted
                   font.family: root.family
                   font.pixelSize: Style.font.bodySmall
@@ -543,10 +580,11 @@ Item {
               Column {
                 width: fieldsColumn.width
                 spacing: Style.spacing.md
+                visible: root.typeDraft !== "dynamic"
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Remote port"
+                  text: root.typeDraft === "remote" ? "Forward to port" : "Remote port"
                   color: Color.muted
                   font.family: root.family
                   font.pixelSize: Style.font.bodySmall

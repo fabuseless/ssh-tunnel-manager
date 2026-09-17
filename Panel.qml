@@ -85,6 +85,19 @@ Panel {
     // child uses anchors.
     property bool hovered: false
 
+    // A reversed arrow alone is too weak a signal at caption size in a row
+    // that already elides/marquee-scrolls (the arrow sits mid-string, the
+    // first thing clipped at rest) — a short, leftmost type badge survives
+    // eliding even when the rest of the line is cut off.
+    function subtitleFor(t) {
+      var type = t.type || "local"
+      if (type === "dynamic") return "D  " + t.sshHost + " — SOCKS :" + t.localPort
+      if (type === "remote") {
+        return "R  " + t.sshHost + ":" + t.localPort + " ← " + t.remoteHost + ":" + t.remotePort
+      }
+      return t.sshHost + ":" + t.localPort + " → " + t.remoteHost + ":" + t.remotePort
+    }
+
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
@@ -166,8 +179,7 @@ Panel {
         Text {
           id: subtitleText
           textFormat: Text.PlainText
-          text: textArea.modelData.sshHost + ":" + textArea.modelData.localPort
-            + " → " + textArea.modelData.remoteHost + ":" + textArea.modelData.remotePort
+          text: textArea.subtitleFor(textArea.modelData)
             + (textArea.modelData.forwardWarning ? "  (" + textArea.modelData.forwardWarning + ")" : "")
           color: textArea.modelData.forwardWarning ? Color.urgent : root.dim
           font.family: root.fontFamily
