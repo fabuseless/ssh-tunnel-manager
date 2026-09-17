@@ -146,29 +146,111 @@ QtObject {
     root.pendingAutoStartRevision++
   }
 
+  // Same pattern again, for the panel row's favourite star. Kept as its
+  // own independent pending map (not folded into pendingAutoStart) since
+  // the two fields, while linked by a cascade (see setAutoStart/
+  // setFavourite below), are still logically separate and can each be
+  // toggled on their own.
+  property var pendingFavourite: ({})
+  property int pendingFavouriteRevision: 0
+
+  function isFavouritePending(id) {
+    return root.pendingFavourite[id] !== undefined
+  }
+
+  function displayFavourite(tunnel) {
+    root.pendingFavouriteRevision
+    var pending = root.pendingFavourite[tunnel.id]
+    if (pending !== undefined) return pending.desired
+    return !!tunnel.favourite
+  }
+
+  function setPendingFavourite(id, desired) {
+    root.pendingFavourite[id] = {
+      desired: desired,
+      deadline: Date.now() + root.pendingToggleTimeout
+    }
+    root.pendingFavouriteRevision++
+    pendingSweep.running = true
+  }
+
+  function clearPendingFavourite(id) {
+    if (root.pendingFavourite[id] === undefined) return
+    delete root.pendingFavourite[id]
+    root.pendingFavouriteRevision++
+  }
+
   // Sets autoStart on one tunnel, optimistically, then patches it through
   // the normal update path (which also handles the actual persistence and
   // any restart-if-connection-changed logic — irrelevant here since
   // autoStart alone never changes where a tunnel connects to).
+  //
+  // Cascade: turning autoStart ON always favourites the tunnel too (the
+  // backend enforces this invariant regardless of what gets sent — see
+  // do_add/do_update's own cascade — but it's mirrored here as well so
+  // the star flips immediately instead of waiting a full round trip).
+  // Turning autoStart off alone never touches favourite.
   function setAutoStart(id, desired, onDone) {
     var tunnel = root.tunnelById(id)
     if (!tunnel) return
     root.setPendingAutoStart(id, desired)
+    var favouriteCascaded = false
+    if (desired) {
+      root.setPendingFavourite(id, true)
+      favouriteCascaded = true
+    }
     var payload = {
       name: tunnel.name,
       sshHost: tunnel.sshHost,
       localPort: tunnel.localPort,
       remoteHost: tunnel.remoteHost,
       remotePort: tunnel.remotePort,
-      autoStart: desired
+      autoStart: desired,
+      favourite: desired ? true : !!tunnel.favourite
     }
     root.updateTunnel(id, payload, function(ok, message) {
       // Success: updateTunnel already triggers its own refreshStatus;
-      // leave the pending flag for that call's reconcilePending to clear
-      // once it confirms the new value, rather than racing it here.
+      // leave the pending flag(s) for that call's reconcilePending to
+      // clear once it confirms the new values, rather than racing it here.
       if (!ok) {
         root.lastError = message
         root.clearPendingAutoStart(id)
+        if (favouriteCascaded) root.clearPendingFavourite(id)
+      }
+      if (onDone) onDone(ok, message)
+    })
+  }
+
+  // Sets favourite on one tunnel, optimistically, then patches it through
+  // the normal update path.
+  //
+  // Cascade: unfavouriting a tunnel always turns its autoStart off too
+  // (mirrored here for the same instant-feedback reason as above — the
+  // backend enforces this invariant regardless). Favouriting alone never
+  // turns autoStart on.
+  function setFavourite(id, desired, onDone) {
+    var tunnel = root.tunnelById(id)
+    if (!tunnel) return
+    root.setPendingFavourite(id, desired)
+    var autoStartCascaded = false
+    if (!desired) {
+      root.setPendingAutoStart(id, false)
+      autoStartCascaded = true
+    }
+    var payload = {
+      name: tunnel.name,
+      sshHost: tunnel.sshHost,
+      localPort: tunnel.localPort,
+      remoteHost: tunnel.remoteHost,
+      remotePort: tunnel.remotePort,
+      autoStart: desired ? !!tunnel.autoStart : false,
+      favourite: desired
+    }
+    root.updateTunnel(id, payload, function(ok, message) {
+      if (!ok) {
+        root.lastError = message
+        root.clearPendingFavourite(id)
+        if (autoStartCascaded) root.clearPendingAutoStart(id)
       }
       if (onDone) onDone(ok, message)
     })
@@ -204,6 +286,17 @@ QtObject {
       }
     }
     if (changed) root.pendingAutoStartRevision++
+
+    changed = false
+    for (var id3 in root.pendingFavourite) {
+      if (root.pendingFavourite[id3].deadline <= now) {
+        delete root.pendingFavourite[id3]
+        changed = true
+      } else {
+        stillPending = true
+      }
+    }
+    if (changed) root.pendingFavouriteRevision++
 
     if (!stillPending) pendingSweep.running = false
   }
@@ -285,6 +378,16 @@ QtObject {
       }
     }
     if (changed) root.pendingAutoStartRevision++
+
+    changed = false
+    for (var id3 in root.pendingFavourite) {
+      var t3 = root.tunnelById(id3)
+      if (t3 && !!t3.favourite === root.pendingFavourite[id3].desired) {
+        delete root.pendingFavourite[id3]
+        changed = true
+      }
+    }
+    if (changed) root.pendingFavouriteRevision++
   }
 
   // Starts every tunnel flagged autoStart on the service's own CRUD lane

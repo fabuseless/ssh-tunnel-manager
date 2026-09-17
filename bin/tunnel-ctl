@@ -127,7 +127,10 @@ validate_whole() {
       and (.remoteHost | valid_str_field)
       and (.remotePort | valid_port)
       and ((if .autoStart == null then false else .autoStart end) | type == "boolean")
-      and ((if .foreign == null then false else .foreign end) | type == "boolean");
+      and ((if .foreign == null then false else .foreign end) | type == "boolean")
+      and ((if .favourite == null
+            then (if .autoStart == null then false else .autoStart end)
+            else .favourite end) | type == "boolean");
     (.schemaVersion == 1)
     and (.tunnels | type == "array")
     and (.tunnels | all(.[]; valid_tunnel))
@@ -580,10 +583,20 @@ do_status() {
     warning_map=$(jq --arg id "$id" --arg warning "$warning" '. + {($id): $warning}' <<<"$warning_map")
   done < <(jq -r '.tunnels[] | [.id, .sshHost, .localPort] | @tsv' <<<"$tunnels")
 
+  # favourite is never actually stored for a tunnel that predates this
+  # field — derived at read time here instead, same treatment as
+  # active/forwardWarning above, so a legacy autoStart:true tunnel shows
+  # correctly favourited immediately, no migration write needed. The
+  # first real do_update touch to it (any edit, or toggling its star or
+  # autoStart) persists the resolved value to disk through the ordinary
+  # patch path.
   local tunnels_with_active
   tunnels_with_active=$(jq --argjson active_map "$active_map" --argjson warning_map "$warning_map" \
     '.tunnels | map(. + {active: ($active_map[.id] // false),
-                          forwardWarning: ($warning_map[.id] // "")})' <<<"$tunnels")
+                          forwardWarning: ($warning_map[.id] // ""),
+                          favourite: (if .favourite == null
+                                      then (if .autoStart == null then false else .autoStart end)
+                                      else .favourite end)})' <<<"$tunnels")
 
   jq -n --argjson tunnels "$tunnels_with_active" '{tunnels: $tunnels}'
 }
@@ -813,6 +826,9 @@ validate_input_fields() {
          and (test("[ \t\r\n]") | not))
     and (.remotePort | type == "number" and (floor == .) and . >= 1 and . <= 65535)
     and ((if .autoStart == null then false else .autoStart end) | type == "boolean")
+    and ((if .favourite == null
+          then (if .autoStart == null then false else .autoStart end)
+          else .favourite end) | type == "boolean")
   ' <<<"$json" >/dev/null 2>&1
 }
 
@@ -820,7 +836,7 @@ do_add() {
   local json="$1"
   validate_input_fields "$json" || fail "invalid tunnel definition"
 
-  local existing name ssh_host local_port remote_host remote_port auto_start id
+  local existing name ssh_host local_port remote_host remote_port auto_start favourite id
   existing=$(cat "$config_file")
   name=$(jq -r '.name' <<<"$json")
   ssh_host=$(jq -r '.sshHost' <<<"$json")
@@ -828,6 +844,19 @@ do_add() {
   remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")
   remote_port=$(jq -r '.remotePort' <<<"$json")
   auto_start=$(jq -r 'if .autoStart == null then false else .autoStart end' <<<"$json")
+  favourite=$(jq -r 'if .favourite == null
+    then (if .autoStart == null then false else .autoStart end)
+    else .favourite end' <<<"$json")
+
+  # Cascade (server-authoritative, applied regardless of what the caller
+  # sent — see do_start's own re-validation / safe_kill_verified's
+  # re-verify-before-every-signal elsewhere in this file for the same
+  # "never trust the caller alone" philosophy). Order matters: step 1
+  # runs first, so a self-contradictory request (autoStart:true AND
+  # favourite:false in the same payload — not something any caller in
+  # this app actually sends) resolves to both true rather than both false.
+  [[ "$auto_start" == "true" ]] && favourite=true
+  [[ "$favourite" == "false" ]] && auto_start=false
 
   if jq -e --argjson p "$local_port" '.tunnels[] | select(.localPort == $p)' <<<"$existing" >/dev/null 2>&1; then
     fail "local port $local_port is already used by another tunnel"
@@ -840,9 +869,10 @@ do_add() {
     --arg id "$id" --arg name "$name" --arg sshHost "$ssh_host" \
     --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
     --argjson remotePort "$remote_port" --argjson autoStart "$auto_start" \
+    --argjson favourite "$favourite" \
     '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
       remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart,
-      foreign: false}')
+      foreign: false, favourite: $favourite}')
 
   write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
 
@@ -880,11 +910,19 @@ do_update() {
   was_active=false
   is_tunnel_active "$pre_ssh_host" "$pre_socket" "$pre_local_port" && was_active=true
 
-  local new_ssh_host new_remote_host new_remote_port auto_start
+  local new_ssh_host new_remote_host new_remote_port auto_start favourite
   new_ssh_host=$(jq -r '.sshHost' <<<"$json")
   new_remote_host=$(jq -r '(.remoteHost // "127.0.0.1")' <<<"$json")
   new_remote_port=$(jq -r '.remotePort' <<<"$json")
   auto_start=$(jq -r 'if .autoStart == null then false else .autoStart end' <<<"$json")
+  favourite=$(jq -r 'if .favourite == null
+    then (if .autoStart == null then false else .autoStart end)
+    else .favourite end' <<<"$json")
+
+  # Same cascade as do_add — see its comment for the reasoning and the
+  # precedence of running step 1 before step 2.
+  [[ "$auto_start" == "true" ]] && favourite=true
+  [[ "$favourite" == "false" ]] && auto_start=false
 
   # Only a connection-relevant field actually changing warrants a restart
   # — renaming a tunnel, or flipping its autoStart flag, doesn't touch
@@ -904,8 +942,10 @@ do_update() {
     --arg remoteHost "$new_remote_host" \
     --argjson remotePort "$new_remote_port" \
     --argjson autoStart "$auto_start" \
+    --argjson favourite "$favourite" \
     '{name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart}')
+      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart,
+      favourite: $favourite}')
 
   write_config '.tunnels |= map(if .id == $id then (. + $patch) else . end)' \
     --arg id "$id" --argjson patch "$patch"

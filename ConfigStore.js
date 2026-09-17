@@ -71,6 +71,7 @@ function toPayload(draft) {
     localPort: Math.floor(Number(draft.localPort)),
     remoteHost: String(draft.remoteHost || "127.0.0.1").trim() || "127.0.0.1",
     remotePort: Math.floor(Number(draft.remotePort)),
-    autoStart: !!draft.autoStart
+    autoStart: !!draft.autoStart,
+    favourite: !!draft.favourite
   }
 }

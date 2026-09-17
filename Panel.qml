@@ -64,6 +64,10 @@ Panel {
     id: textArea
     required property var modelData
     required property real availableWidth
+    // Managed rows only — a foreign row's text stays plain, not clickable
+    // (there's nothing to edit for a tunnel this plugin didn't create).
+    property bool editable: false
+    signal clicked()
 
     anchors.verticalCenter: parent.verticalCenter
     width: availableWidth
@@ -84,9 +88,20 @@ Panel {
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      acceptedButtons: Qt.NoButton
+      acceptedButtons: textArea.editable ? Qt.LeftButton : Qt.NoButton
+      cursorShape: textArea.editable ? Qt.PointingHandCursor : Qt.ArrowCursor
       onEntered: textArea.hovered = true
       onExited: textArea.hovered = false
+      onClicked: if (textArea.editable) textArea.clicked()
+    }
+
+    // Neither this Item nor ToggleSwitch has a built-in tooltip the way
+    // PanelActionButton does — declared inline here, bound to this
+    // item's own hover state, same pattern as the toggle switch's tooltip.
+    PanelToolTip {
+      visible: textArea.editable && textArea.hovered
+      text: "Edit"
+      fontFamily: root.fontFamily
     }
 
     Column {
@@ -397,19 +412,27 @@ Panel {
 
                 TunnelTextArea {
                   modelData: parent.modelData
-                  availableWidth: parent.width - toggleSwitch.width - editBtn.width
+                  availableWidth: parent.width - toggleSwitch.width - starBtn.width
                     - deleteBtn.width - autoStartBtn.width - (Style.spacing.md * 4)
+                  editable: true
+                  onClicked: root.openSettings(modelData.id)
                 }
 
                 PanelActionButton {
-                  id: editBtn
+                  id: starBtn
+                  readonly property bool favouriteOn: root.serviceReady && root.svc.displayFavourite(modelData)
                   anchors.verticalCenter: parent.verticalCenter
-                  iconText: "✎"   // pencil
-                  tooltipText: "Edit"
-                  foreground: Qt.darker(root.foreground, 1.4)
+                  iconText: ""   // fa-star
+                  tooltipText: favouriteOn ? "Unfavourite" : "Favourite"
+                  foreground: favouriteOn ? Color.accent : Qt.darker(root.foreground, 1.4)
                   fontFamily: root.fontFamily
                   fontSize: Style.font.icon + 4
-                  onClicked: root.openSettings(modelData.id)
+                  onClicked: {
+                    if (!root.serviceReady) return
+                    root.svc.setFavourite(modelData.id, !favouriteOn, function(ok, message) {
+                      if (!ok) root.svc.lastError = message
+                    })
+                  }
                 }
 
                 PanelActionButton {

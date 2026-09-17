@@ -31,6 +31,7 @@ Item {
   property string remoteHostDraft: ""
   property string remotePortDraft: ""
   property bool autoStartDraft: false
+  property bool favouriteDraft: false
 
   property var fieldErrors: ({})
   property string formError: ""
@@ -89,6 +90,7 @@ Item {
         root.remoteHostDraft = tunnel.remoteHost
         root.remotePortDraft = String(tunnel.remotePort)
         root.autoStartDraft = !!tunnel.autoStart
+        root.favouriteDraft = !!tunnel.favourite
         return
       }
     }
@@ -98,6 +100,7 @@ Item {
     root.remoteHostDraft = ""
     root.remotePortDraft = ""
     root.autoStartDraft = false
+    root.favouriteDraft = false
   }
 
   function currentDraft() {
@@ -107,7 +110,8 @@ Item {
       localPort: Number(root.localPortDraft),
       remoteHost: root.remoteHostDraft,
       remotePort: Number(root.remotePortDraft),
-      autoStart: root.autoStartDraft
+      autoStart: root.autoStartDraft,
+      favourite: root.favouriteDraft
     }
   }
 
@@ -569,6 +573,46 @@ Item {
                 spacing: Style.spacing.md
 
                 Column {
+                  width: parent.width - favouriteToggle.width - Style.spacing.md
+                  spacing: Style.spacing.xxs
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "Favourite"
+                    color: Color.muted
+                    font.family: root.family
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "Keep this tunnel marked as a favourite. Turning this "
+                      + "off also turns off auto-restart on reboot."
+                    color: Color.muted
+                    font.family: root.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                ToggleSwitch {
+                  id: favouriteToggle
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: root.favouriteDraft
+                  foreground: root.foreground
+                  accent: Color.accent
+                  onToggled: {
+                    root.favouriteDraft = !root.favouriteDraft
+                    if (!root.favouriteDraft) root.autoStartDraft = false
+                  }
+                }
+              }
+
+              Row {
+                width: fieldsColumn.width
+                spacing: Style.spacing.md
+
+                Column {
                   width: parent.width - autoStartToggle.width - Style.spacing.md
                   spacing: Style.spacing.xxs
 
@@ -597,7 +641,10 @@ Item {
                   checked: root.autoStartDraft
                   foreground: root.foreground
                   accent: Color.accent
-                  onToggled: root.autoStartDraft = !root.autoStartDraft
+                  onToggled: {
+                    root.autoStartDraft = !root.autoStartDraft
+                    if (root.autoStartDraft) root.favouriteDraft = true
+                  }
                 }
               }
 
