@@ -40,11 +40,18 @@
 #                               the edit saved, just shows inactive, same as
 #                               any other failed start)
 #   remove <id>                stop if running, then delete the definition
-#   resume-auto-start          start every tunnel with autoStart:true that
-#                               isn't already active, then JSON {tunnels}
-#                               (do_status's own shape). Meant to run once,
-#                               at shell/service startup — never from the
-#                               regular poll, which would fight a manual stop
+#   resume-auto-start          first prunes every tunnel that isn't
+#                               favourited (the "auto-remove" half of the
+#                               favourites concept — see the cascade note
+#                               on validate_whole's favourite check),
+#                               then starts every remaining tunnel with
+#                               autoStart:true that isn't already active,
+#                               then JSON {tunnels} (do_status's own
+#                               shape). Meant to run once, at shell/
+#                               service startup — never from the regular
+#                               poll, which would fight a manual stop or
+#                               silently delete a tunnel someone's still
+#                               actively using this session
 #   get-prefs                  JSON {autoAdopt, killAutosshFully}
 #   set-prefs <json>           validate + patch preferences, returns get-prefs
 #
@@ -979,6 +986,22 @@ do_remove() {
 # onCompleted) — never from the regular poll timer, which would fight a
 # tunnel the user deliberately stopped by hand moments earlier.
 do_resume_auto_start() {
+  # Auto-remove half of the favourites concept: anything not favourited
+  # doesn't survive a shell/machine restart. Only ever drops the
+  # definition — never stops a live process. A still-running pruned
+  # tunnel is simply rediscovered and re-tracked as an ordinary foreign
+  # entry by the do_status call at the end of this same function (or the
+  # next regular poll), same as any other foreign process; a dead one
+  # just quietly disappears. autoStart:true always implies favourite:true
+  # (the cascade invariant in do_add/do_update), so nothing the pass
+  # below goes on to start is ever a pruning candidate here — order
+  # between the two doesn't affect correctness.
+  write_config '.tunnels |= map(select(
+    (if .favourite == null
+     then (if .autoStart == null then false else .autoStart end)
+     else .favourite end) == true
+  ))'
+
   local tunnels count i
   tunnels=$(cat "$config_file")
   count=$(jq '.tunnels | length' <<<"$tunnels")
