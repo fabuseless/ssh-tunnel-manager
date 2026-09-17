@@ -462,6 +462,12 @@ Panel {
                   foreground: root.foreground
                   accent: Color.accent
                   onToggled: if (root.serviceReady) root.svc.toggleTunnel(modelData.id)
+
+                  PanelToolTip {
+                    visible: toggleSwitch.containsMouse
+                    text: parent.checked ? "Disable" : "Enable"
+                    fontFamily: root.fontFamily
+                  }
                 }
               }
             }
