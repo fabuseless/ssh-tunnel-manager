@@ -313,12 +313,22 @@ Panel {
             Row {
               spacing: Style.spacing.sm
 
+              // PanelActionButton's own hover/highlight box is derived
+              // from its fontSize, so giving the "+" below a larger glyph
+              // size than the gear would also grow ITS box unless both
+              // are pinned to the same explicit size — otherwise the two
+              // buttons' highlight areas mismatch and the row stops
+              // aligning.
+              readonly property real actionButtonSize:
+                Math.max(Style.space(22), Style.font.icon + 4 + Style.spacing.sm * 2)
+
               PanelActionButton {
                 iconText: ""   // fa-gear
                 tooltipText: "Preferences"
                 foreground: Qt.darker(root.foreground, 1.4)
                 fontFamily: root.fontFamily
                 fontSize: Style.font.icon + 4
+                size: parent.actionButtonSize
                 onClicked: root.openPreferences()
               }
 
@@ -332,6 +342,7 @@ Panel {
                 // noticeably larger pixel size to read as the same visual
                 // weight next to the gear icon.
                 fontSize: Style.font.icon + 10
+                size: parent.actionButtonSize
                 onClicked: root.openSettings("")
               }
             }
