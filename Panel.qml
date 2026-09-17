@@ -32,6 +32,16 @@ Panel {
     return serviceReady && svc.activeCount > 0 ? base : Qt.darker(base, 1.55)
   }
 
+  // Split once here rather than at each Repeater/visibility site. A fresh
+  // array each poll (root.svc.tunnels is reassigned wholesale by
+  // refreshStatus) is exactly the same "new reference" shape Repeater
+  // already handles today — filtering it client-side adds no new binding
+  // concern.
+  readonly property var managedTunnels: serviceReady
+    ? svc.tunnels.filter(function(t) { return !t.foreign }) : []
+  readonly property var foreignTunnels: serviceReady
+    ? svc.tunnels.filter(function(t) { return t.foreign }) : []
+
   function openSettings(tunnelId) {
     if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
     close()
@@ -44,6 +54,130 @@ Panel {
     close()
     bar.shell.summon("bhh27.ssh-tunnel-manager",
       JSON.stringify({ mode: "preferences" }))
+  }
+
+  // Shared by both the managed and foreign row delegates below — only the
+  // trailing button set (and therefore the available width) differs
+  // between them, so the name+subtitle marquee logic itself lives here
+  // once instead of being duplicated.
+  component TunnelTextArea: Item {
+    id: textArea
+    required property var modelData
+    required property real availableWidth
+
+    anchors.verticalCenter: parent.verticalCenter
+    width: availableWidth
+    height: textColumn.implicitHeight
+
+    // At rest, both lines elide as before. While this row's text area is
+    // hovered, a line too long to fit instead marquee-scrolls to reveal
+    // the rest — same technique as the media bar widget's now-playing
+    // title (plugins/services/media/BarWidget.qml), but gated on hover
+    // rather than always-on since several long tunnel entries scrolling
+    // at once in a list would look busy.
+    //
+    // The hover MouseArea lives on this plain Item, not on the Column
+    // below — a Column (like any positioner) breaks entirely if a direct
+    // child uses anchors.
+    property bool hovered: false
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      acceptedButtons: Qt.NoButton
+      onEntered: textArea.hovered = true
+      onExited: textArea.hovered = false
+    }
+
+    Column {
+      id: textColumn
+      width: parent.width
+
+      Item {
+        id: nameClip
+        width: textColumn.width
+        height: nameText.implicitHeight
+        clip: true
+
+        Text {
+          id: nameText
+          textFormat: Text.PlainText
+          text: textArea.modelData.name
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: textArea.hovered ? Text.ElideNone : Text.ElideRight
+          width: textArea.hovered ? implicitWidth : nameClip.width
+
+          readonly property bool needsScroll: implicitWidth > nameClip.width
+
+          SequentialAnimation {
+            running: nameText.needsScroll && textArea.hovered
+            loops: Animation.Infinite
+            onRunningChanged: if (!running) nameText.x = 0
+
+            NumberAnimation {
+              target: nameText
+              property: "x"
+              from: 0
+              to: -(nameText.implicitWidth - nameClip.width)
+              // Duration scaled by the actual distance travelled (the
+              // overflow), not the full text width — that mismatch made
+              // two rows with different overflow-to-length ratios
+              // visibly scroll at different speeds even though both used
+              // the same "px per ms" constant. This keeps every row's
+              // scroll speed the same regardless of how long its full
+              // text is.
+              duration: Math.max(1200, (nameText.implicitWidth - nameClip.width) * 25)
+              easing.type: Easing.Linear
+            }
+            PauseAnimation { duration: 900 }
+          }
+        }
+      }
+
+      Item {
+        id: subtitleClip
+        width: textColumn.width
+        height: subtitleText.implicitHeight
+        clip: true
+
+        Text {
+          id: subtitleText
+          textFormat: Text.PlainText
+          text: textArea.modelData.sshHost + ":" + textArea.modelData.localPort
+            + " → " + textArea.modelData.remoteHost + ":" + textArea.modelData.remotePort
+            + (textArea.modelData.forwardWarning ? "  (" + textArea.modelData.forwardWarning + ")" : "")
+          color: textArea.modelData.forwardWarning ? Color.urgent : root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: textArea.hovered ? Text.ElideNone : Text.ElideRight
+          width: textArea.hovered ? implicitWidth : subtitleClip.width
+
+          readonly property bool needsScroll: implicitWidth > subtitleClip.width
+
+          SequentialAnimation {
+            running: subtitleText.needsScroll && textArea.hovered
+            loops: Animation.Infinite
+            onRunningChanged: if (!running) subtitleText.x = 0
+
+            NumberAnimation {
+              target: subtitleText
+              property: "x"
+              from: 0
+              to: -(subtitleText.implicitWidth - subtitleClip.width)
+              // Same fix as nameText above: scale by the overflow
+              // distance, not the full text width, so the warning-
+              // appended (longer) subtitle doesn't visibly scroll faster
+              // than a plain one.
+              duration: Math.max(1200, (subtitleText.implicitWidth - subtitleClip.width) * 25)
+              easing.type: Easing.Linear
+            }
+            PauseAnimation { duration: 900 }
+          }
+        }
+      }
+    }
   }
 
   implicitWidth: button.implicitWidth
@@ -182,7 +316,9 @@ Panel {
 
         Column {
           width: parent.width
-          visible: !root.serviceReady || root.svc.tunnels.length === 0
+          // Managed-only: a tunnel found only in the foreign section
+          // shouldn't suppress the invitation to create one of your own.
+          visible: !root.serviceReady || root.managedTunnels.length === 0
           spacing: Style.spacing.xl
 
           Text {
@@ -229,7 +365,7 @@ Panel {
             spacing: Style.spacing.md
 
             Repeater {
-              model: root.serviceReady ? root.svc.tunnels : null
+              model: root.managedTunnels
 
               delegate: Row {
                 required property var modelData
@@ -259,123 +395,10 @@ Panel {
                   return root.serviceReady && root.svc.isPending(modelData.id)
                 }
 
-                Item {
-                  id: textArea
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - toggleSwitch.width - editBtn.width
+                TunnelTextArea {
+                  modelData: parent.modelData
+                  availableWidth: parent.width - toggleSwitch.width - editBtn.width
                     - deleteBtn.width - autoStartBtn.width - (Style.spacing.md * 4)
-                  height: textColumn.implicitHeight
-
-                  // At rest, both lines elide as before. While this row's
-                  // text area is hovered, a line too long to fit instead
-                  // marquee-scrolls to reveal the rest — same technique as
-                  // the media bar widget's now-playing title
-                  // (plugins/services/media/BarWidget.qml), but gated on
-                  // hover rather than always-on since several long tunnel
-                  // entries scrolling at once in a list would look busy.
-                  //
-                  // The hover MouseArea lives on this plain Item, not on
-                  // the Column below — a Column (like any positioner)
-                  // breaks entirely if a direct child uses anchors.
-                  property bool hovered: false
-
-                  MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
-                    onEntered: textArea.hovered = true
-                    onExited: textArea.hovered = false
-                  }
-
-                  Column {
-                    id: textColumn
-                    width: parent.width
-
-                    Item {
-                      id: nameClip
-                      width: textColumn.width
-                      height: nameText.implicitHeight
-                      clip: true
-
-                      Text {
-                        id: nameText
-                        textFormat: Text.PlainText
-                        text: modelData.name
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                        elide: textArea.hovered ? Text.ElideNone : Text.ElideRight
-                        width: textArea.hovered ? implicitWidth : nameClip.width
-
-                        readonly property bool needsScroll: implicitWidth > nameClip.width
-
-                        SequentialAnimation {
-                          running: nameText.needsScroll && textArea.hovered
-                          loops: Animation.Infinite
-                          onRunningChanged: if (!running) nameText.x = 0
-
-                          NumberAnimation {
-                            target: nameText
-                            property: "x"
-                            from: 0
-                            to: -(nameText.implicitWidth - nameClip.width)
-                            // Duration scaled by the actual distance travelled
-                            // (the overflow), not the full text width — that
-                            // mismatch made two rows with different overflow-
-                            // to-length ratios visibly scroll at different
-                            // speeds even though both used the same "px per ms"
-                            // constant. This keeps every row's scroll speed
-                            // the same regardless of how long its full text is.
-                            duration: Math.max(1200, (nameText.implicitWidth - nameClip.width) * 25)
-                            easing.type: Easing.Linear
-                          }
-                          PauseAnimation { duration: 900 }
-                        }
-                      }
-                    }
-
-                    Item {
-                      id: subtitleClip
-                      width: textColumn.width
-                      height: subtitleText.implicitHeight
-                      clip: true
-
-                      Text {
-                        id: subtitleText
-                        textFormat: Text.PlainText
-                        text: modelData.sshHost + ":" + modelData.localPort
-                          + " → " + modelData.remoteHost + ":" + modelData.remotePort
-                          + (modelData.forwardWarning ? "  (" + modelData.forwardWarning + ")" : "")
-                        color: modelData.forwardWarning ? Color.urgent : root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        elide: textArea.hovered ? Text.ElideNone : Text.ElideRight
-                        width: textArea.hovered ? implicitWidth : subtitleClip.width
-
-                        readonly property bool needsScroll: implicitWidth > subtitleClip.width
-
-                        SequentialAnimation {
-                          running: subtitleText.needsScroll && textArea.hovered
-                          loops: Animation.Infinite
-                          onRunningChanged: if (!running) subtitleText.x = 0
-
-                          NumberAnimation {
-                            target: subtitleText
-                            property: "x"
-                            from: 0
-                            to: -(subtitleText.implicitWidth - subtitleClip.width)
-                            // Same fix as nameText above: scale by the overflow
-                            // distance, not the full text width, so the
-                            // warning-appended (longer) subtitle doesn't
-                            // visibly scroll faster than a plain one.
-                            duration: Math.max(1200, (subtitleText.implicitWidth - subtitleClip.width) * 25)
-                            easing.type: Easing.Linear
-                          }
-                          PauseAnimation { duration: 900 }
-                        }
-                      }
-                    }
-                  }
                 }
 
                 PanelActionButton {
@@ -439,6 +462,58 @@ Panel {
                   foreground: root.foreground
                   accent: Color.accent
                   onToggled: if (root.serviceReady) root.svc.toggleTunnel(modelData.id)
+                }
+              }
+            }
+
+            // Foreign tunnels: discovered running outside this plugin, never
+            // started by it. Segregated below the managed ones with a
+            // reduced control set — display and kill only, per the user's
+            // explicit request. Entirely hidden when there are none.
+            Column {
+              width: rowsColumn.width
+              visible: root.foreignTunnels.length > 0
+              spacing: Style.spacing.md
+
+              PanelSeparator { width: parent.width; foreground: root.foreground }
+
+              Text {
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Tunnels below were found running outside this plugin. They can only be stopped, not edited or auto-started."
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Repeater {
+                model: root.foreignTunnels
+
+                delegate: Row {
+                  required property var modelData
+                  width: rowsColumn.width
+                  spacing: Style.spacing.md
+
+                  TunnelTextArea {
+                    modelData: parent.modelData
+                    availableWidth: parent.width - killBtn.width - Style.spacing.md
+                  }
+
+                  PanelActionButton {
+                    id: killBtn
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: ""   // fa-trash
+                    tooltipText: "Kill"
+                    foreground: Qt.darker(root.foreground, 1.4)
+                    hoverColor: Color.urgent
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.icon + 4
+                    onClicked: {
+                      if (!root.serviceReady) return
+                      root.deleteConfirmId = modelData.id
+                    }
+                  }
                 }
               }
             }

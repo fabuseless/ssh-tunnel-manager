@@ -22,12 +22,13 @@
 #                               Before computing status, silently auto-adopts
 #                               any foreign ssh -L process found running on
 #                               the system (one not spawned by this plugin)
-#                               as a normal tunnel definition — from that
-#                               point on it is indistinguishable from one
-#                               created through the form. Adoption of
-#                               never-before-seen processes is skipped when
-#                               the autoAdopt preference is off; the resync
-#                               of already-tracked entries is not.
+#                               as a tunnel definition with "foreign":true
+#                               (see auto_adopt_new_ports) — permanently
+#                               marked as such, so the frontend can segregate
+#                               it and restrict it to a kill-only control set.
+#                               Adoption of never-before-seen processes is
+#                               skipped when the autoAdopt preference is off;
+#                               the resync of already-tracked entries is not.
 #   list-ssh-hosts             JSON array of Host aliases from ~/.ssh/config
 #   add <json>                 validate + append a new tunnel definition
 #   update <id> <json>         validate + patch an existing tunnel definition.
@@ -125,7 +126,8 @@ validate_whole() {
       and (.localPort | valid_port)
       and (.remoteHost | valid_str_field)
       and (.remotePort | valid_port)
-      and ((if .autoStart == null then false else .autoStart end) | type == "boolean");
+      and ((if .autoStart == null then false else .autoStart end) | type == "boolean")
+      and ((if .foreign == null then false else .foreign end) | type == "boolean");
     (.schemaVersion == 1)
     and (.tunnels | type == "array")
     and (.tunnels | all(.[]; valid_tunnel))
@@ -526,7 +528,7 @@ auto_adopt_new_ports() {
         --argjson localPort "$lp" --arg remoteHost "$remote_host" \
         --argjson remotePort "$remote_port" \
         '{id:$id, name:$name, sshHost:$sshHost, localPort:$localPort,
-          remoteHost:$remoteHost, remotePort:$remotePort}')
+          remoteHost:$remoteHost, remotePort:$remotePort, foreign:true}')
       write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
       continue
     fi
@@ -839,7 +841,8 @@ do_add() {
     --argjson localPort "$local_port" --arg remoteHost "$remote_host" \
     --argjson remotePort "$remote_port" --argjson autoStart "$auto_start" \
     '{id: $id, name: $name, sshHost: $sshHost, localPort: $localPort,
-      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart}')
+      remoteHost: $remoteHost, remotePort: $remotePort, autoStart: $autoStart,
+      foreign: false}')
 
   write_config '.tunnels += [$newtunnel]' --argjson newtunnel "$new_tunnel"
 

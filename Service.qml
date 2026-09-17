@@ -34,10 +34,13 @@ QtObject {
 
   readonly property int pollIntervalSec: root.intSetting("pollIntervalSec", 7, 3, 120)
 
-  // [{id, name, sshHost, localPort, remoteHost, remotePort, active}].
+  // [{id, name, sshHost, localPort, remoteHost, remotePort, autoStart,
+  //   foreign, active, forwardWarning}].
   // tunnel-ctl silently auto-adopts any foreign ssh -L process it finds
-  // running (one not spawned by this plugin) as a normal entry here — from
-  // this side there is no such thing as a "foreign" tunnel to track.
+  // running (one not spawned by this plugin), permanently marking it
+  // foreign:true (see auto_adopt_new_ports) — Panel.qml uses that to
+  // segregate it into a display-and-kill-only section, distinct from a
+  // tunnel created through the form.
   property var tunnels: []
   property var sshHosts: []
   property string lastError: ""
