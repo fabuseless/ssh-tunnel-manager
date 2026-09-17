@@ -1,9 +1,17 @@
 # SSH Tunnel Manager
 
+<p>
+  <a href="LICENSE"><img alt="License: MIT" height="20" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
+  <a href="https://github.com/tcballard/omarchy-badges"><img alt="Built for Omarchy: Plugin" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg"></a>
+  <a href="#compatibility"><img alt="Supported Omarchy versions: 4.0.0+" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/dd84bb21f19caf617caa5b3c1af7ff3c6cb847c3/badges/v1/compatibility/omarchy-4.0.0-plus.svg"></a>
+</p>
+
 An [Omarchy](https://omarchy.org)/Quickshell plugin for creating, monitoring,
 and toggling SSH port-forward tunnels from the status bar — local (`-L`),
 remote (`-R`), and dynamic SOCKS (`-D`) — using your existing `~/.ssh/config`
 and SSH agent.
+
+![Panel preview](preview.png)
 
 ## Features
 
@@ -41,6 +49,30 @@ To update after pulling changes:
 omarchy plugin update bhh27.ssh-tunnel-manager --yes
 omarchy restart shell
 ```
+
+### Removal
+
+```sh
+omarchy plugin remove bhh27.ssh-tunnel-manager --yes
+omarchy restart shell
+```
+
+## Dependencies
+
+`bin/tunnel-ctl` shells out to a handful of standard tools, all normally
+present on an Omarchy install:
+
+- `ssh` — spawns and controls every tunnel.
+- `jq` — reads/writes/validates `tunnels.json`.
+- `bash`, `flock`, `setsid` — process/lock management (`flock`/`setsid` are
+  part of util-linux).
+- `autossh` (optional) — only needed if you run autossh-supervised tunnels
+  and want the "fully stop autossh" preference to have anything to act on.
+
+## Compatibility
+
+Targets the Omarchy 4 Quattro shell-plugin contract (4.0.0+). Developed and
+tested against Omarchy 4.0.4-1 (`omarchy-version`).
 
 ## Architecture
 

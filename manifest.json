@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "bhh27.ssh-tunnel-manager",
   "name": "SSH Tunnel Manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "bhh27",
   "license": "MIT",
-  "description": "Create, monitor, and toggle local SSH port-forward tunnels from the bar, using your existing ~/.ssh/config and SSH agent.",
+  "description": "Create, monitor, and toggle local, remote, and dynamic SOCKS SSH port-forward tunnels from the bar, using your existing ~/.ssh/config and SSH agent.",
   "kinds": ["service", "bar-widget", "overlay"],
   "entryPoints": {
     "service": "Service.qml",
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "SSH Tunnel Manager",
-    "description": "Favorite tunnel toggle plus full tunnel list.",
+    "description": "Manage local, remote, and dynamic SSH tunnels, with favourites and auto-restart.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
