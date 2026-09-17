@@ -503,7 +503,7 @@ Panel {
                   PanelActionButton {
                     id: killBtn
                     anchors.verticalCenter: parent.verticalCenter
-                    iconText: ""   // fa-trash
+                    iconText: ""   // fa-trash
                     tooltipText: "Kill"
                     foreground: Qt.darker(root.foreground, 1.4)
                     hoverColor: Color.urgent
