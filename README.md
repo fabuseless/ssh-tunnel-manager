@@ -74,6 +74,9 @@ present on an Omarchy install:
 Targets the Omarchy 4 Quattro shell-plugin contract (4.0.0+). Developed and
 tested against Omarchy 4.0.4-1 (`omarchy-version`).
 
+Runs entirely with your normal user permissions. No sudo or pkexec is
+required, and it never installs packages.
+
 ## Architecture
 
 - **`bin/tunnel-ctl`** — the sole owner of `tunnels.json` and every `ssh`
