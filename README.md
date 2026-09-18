@@ -40,20 +40,20 @@ and SSH agent.
 This is an Omarchy plugin. With the Omarchy CLI installed:
 
 ```sh
-omarchy plugin add --enable bhh27.ssh-tunnel-manager https://github.com/bhh27/ssh-tunnel-manager
+omarchy plugin add --enable fabuseless.ssh-tunnel-manager https://github.com/fabuseless/ssh-tunnel-manager
 ```
 
 To update after pulling changes:
 
 ```sh
-omarchy plugin update bhh27.ssh-tunnel-manager --yes
+omarchy plugin update fabuseless.ssh-tunnel-manager --yes
 omarchy restart shell
 ```
 
 ### Removal
 
 ```sh
-omarchy plugin remove bhh27.ssh-tunnel-manager --yes
+omarchy plugin remove fabuseless.ssh-tunnel-manager --yes
 omarchy restart shell
 ```
 

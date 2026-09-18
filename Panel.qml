@@ -8,12 +8,12 @@ import qs.Commons
 // dispatch; this file only renders it and forwards clicks.
 Panel {
   id: root
-  moduleName: "bhh27.ssh-tunnel-manager"
+  moduleName: "fabuseless.ssh-tunnel-manager"
   ipcTarget: "ssh-tunnel-manager"
   manageIpc: false
 
   readonly property var svc: bar && bar.shell
-    ? bar.shell.serviceFor("bhh27.ssh-tunnel-manager") : null
+    ? bar.shell.serviceFor("fabuseless.ssh-tunnel-manager") : null
   readonly property bool serviceReady: svc !== null
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -45,14 +45,14 @@ Panel {
   function openSettings(tunnelId) {
     if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
     close()
-    bar.shell.summon("bhh27.ssh-tunnel-manager",
+    bar.shell.summon("fabuseless.ssh-tunnel-manager",
       JSON.stringify({ editId: tunnelId || "" }))
   }
 
   function openPreferences() {
     if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
     close()
-    bar.shell.summon("bhh27.ssh-tunnel-manager",
+    bar.shell.summon("fabuseless.ssh-tunnel-manager",
       JSON.stringify({ mode: "preferences" }))
   }
 

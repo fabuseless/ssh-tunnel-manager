@@ -98,7 +98,7 @@ umask 077
 
 : "${XDG_RUNTIME_DIR:?SSH Tunnel Manager requires XDG_RUNTIME_DIR}"
 
-plugin_id="bhh27.ssh-tunnel-manager"
+plugin_id="fabuseless.ssh-tunnel-manager"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/$plugin_id"
 runtime_dir="$XDG_RUNTIME_DIR/$plugin_id"
 config_file="$data_dir/tunnels.json"

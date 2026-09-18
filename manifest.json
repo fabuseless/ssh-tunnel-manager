@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "bhh27.ssh-tunnel-manager",
+  "id": "fabuseless.ssh-tunnel-manager",
   "name": "SSH Tunnel Manager",
   "version": "0.2.0",
-  "author": "bhh27",
+  "author": "fabuseless",
   "license": "MIT",
   "description": "Create, monitor, and toggle local, remote, and dynamic SOCKS SSH port-forward tunnels from the bar, using your existing ~/.ssh/config and SSH agent.",
   "kinds": ["service", "bar-widget", "overlay"],

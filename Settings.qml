@@ -12,7 +12,7 @@ import "ConfigStore.js" as ConfigStore
 //
 // Summoned by the shell, not by IPC — Panel.qml already owns the
 // "ssh-tunnel-manager" target and a target routes to one handler.
-//   omarchy-shell shell summon bhh27.ssh-tunnel-manager '{"editId":"<id>"}'
+//   omarchy-shell shell summon fabuseless.ssh-tunnel-manager '{"editId":"<id>"}'
 Item {
   id: root
 
@@ -77,7 +77,7 @@ Item {
   function dismiss() {
     root.opened = false
     if (root.shell && typeof root.shell.hide === "function") {
-      root.shell.hide((root.manifest && root.manifest.id) || "bhh27.ssh-tunnel-manager")
+      root.shell.hide((root.manifest && root.manifest.id) || "fabuseless.ssh-tunnel-manager")
     }
   }
 
